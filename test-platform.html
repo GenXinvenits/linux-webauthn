@@ -1,0 +1,24 @@
+<!doctype html>
+<html>
+<body>
+<h2>Firefox WebAuthn Test</h2>
+<pre id="out">Testing...</pre>
+
+<script>
+(async () => {
+  const out = document.getElementById("out");
+
+  try {
+    const available =
+      await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable();
+
+    out.textContent =
+      "User-verifying platform authenticator: " + available;
+  } catch (e) {
+    out.textContent =
+      "ERROR: " + e.name + "\n" + e.message;
+  }
+})();
+</script>
+</body>
+</html>

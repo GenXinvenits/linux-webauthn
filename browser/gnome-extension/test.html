@@ -1,0 +1,97 @@
+<!doctype html>
+
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>LINUX WebAuthn Bridge Test</title>
+</head>
+
+<body>
+
+<h1>LINUX WebAuthn Bridge Test</h1>
+
+<button id="test">
+    Test LINUX Native Bridge
+</button>
+
+<pre id="output"></pre>
+
+<script>
+
+const output =
+    document.getElementById("output");
+
+function log(...args) {
+
+    console.log(
+        "LINUX WEBAUTHN TEST >>>",
+        ...args
+    );
+
+    output.textContent +=
+        args.map(String).join(" ")
+        + "\n";
+}
+
+
+window.addEventListener(
+    "message",
+    function(event) {
+
+        if (event.source !== window)
+            return;
+
+        if (
+            !event.data ||
+            event.data.source !==
+                "LINUX-webauthn-native"
+        ) {
+            return;
+        }
+
+        log(
+            "NATIVE RESPONSE:",
+            JSON.stringify(
+                event.data
+            )
+        );
+    }
+);
+
+
+document
+    .getElementById("test")
+    .addEventListener(
+        "click",
+        function() {
+
+            const request = {
+
+                source:
+                    "LINUX-webauthn-page",
+
+                operation:
+                    "ping",
+
+                data: {
+                    message:
+                        "hello from Firefox"
+                }
+            };
+
+            log(
+                "SENDING:",
+                JSON.stringify(request)
+            );
+
+            window.postMessage(
+                request,
+                window.location.origin
+            );
+        }
+    );
+
+</script>
+
+</body>
+</html>
