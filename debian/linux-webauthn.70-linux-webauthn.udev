@@ -1,4 +1,0 @@
-# Give the active desktop user access to the Linux UHID device.
-# This keeps the WebAuthn daemon in the user's session rather than
-# requiring it to run as root.
-KERNEL=="uhid", TAG+="uaccess"
