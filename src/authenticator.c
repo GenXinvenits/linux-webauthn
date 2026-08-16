@@ -81,9 +81,15 @@ int authenticator_process(
 {
     int uv_status;
     int rc;
+    uint8_t command;
 
     if (!initialized)
         return -1;
+
+    if (!input || input_len < 1)
+        return -1;
+
+    command = input[0];
 
     /*
      * Only one CTAP operation may touch the authenticator state at a time.
@@ -94,11 +100,14 @@ int authenticator_process(
     g_mutex_lock(&process_mutex);
 
     /*
-     * CTAP owns the user-verification policy. The transport layer
-     * only carries the request and must not decide when fingerprint
-     * verification is required.
+     * A successful UV operation belongs to the current CTAP assertion
+     * sequence. GetNextAssertion has no UV option of its own, so it must
+     * inherit the successful verification from the preceding GetAssertion.
+     *
+     * For every other command, stale UV state is not accepted: the normal
+     * CTAP UV preparation path clears it or performs a fresh verification.
      */
-    if (ctap_is_user_verified()) {
+    if (command == CTAP_CMD_GET_NEXT_ASSERTION && ctap_is_user_verified()) {
         uv_status = CTAP2_OK;
     } else {
         uv_status = ctap_prepare_user_verification(
@@ -133,10 +142,12 @@ int authenticator_process(
         output_len);
 
     /*
-     * UV is strictly per-operation. Never allow a successful fingerprint
-     * verification to authorize a later CTAP request.
+     * Keep successful UV alive only long enough for the immediate
+     * GetNextAssertion sequence. A new GetAssertion will perform its own
+     * fingerprint verification through ctap_prepare_user_verification().
      */
-    ctap_set_user_verified(0);
+    if (command != CTAP_CMD_GET_ASSERTION)
+        ctap_set_user_verified(0);
 
     g_mutex_unlock(&process_mutex);
 
