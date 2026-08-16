@@ -54,6 +54,16 @@ typedef struct {
 void ctap_init(void);
 void ctap_set_user_verified(int verified);
 int ctap_is_user_verified(void);
+
+/*
+ * Prepare user verification for one CTAP operation.
+ * Returns CTAP2_OK when UV is not requested or succeeds,
+ * otherwise returns the appropriate CTAP2 error status.
+ */
+int ctap_prepare_user_verification(
+    const uint8_t *input,
+    size_t input_len);
+
 void ctap_cleanup(void);
 
 int ctap_process(
