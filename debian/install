@@ -1,0 +1,5 @@
+debian/tmp/usr/bin/linux-webauthn usr/bin/
+debian/tmp/usr/share/dbus-1/services/org.linux.WebAuthn.service usr/share/dbus-1/services/
+debian/tmp/usr/lib/systemd/user/linux-webauthn.service usr/lib/systemd/user/
+debian/tmp/usr/lib/systemd/user/default.target.wants/linux-webauthn.service usr/lib/systemd/user/default.target.wants/
+debian/tmp/usr/lib/udev/rules.d/70-linux-webauthn.rules usr/lib/udev/rules.d/
