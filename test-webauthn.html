@@ -100,7 +100,7 @@ async function authenticate() {
 
   out.textContent = "Browser authentication succeeded.";
   log("credential ID:", b64url(new Uint8Array(assertion.rawId)));
-  log("authenticatorData bytes:", assertion.response.getAuthenticatorData().byteLength);
+  log("authenticatorData bytes:", assertion.response.authenticatorData.byteLength);
   log("signature bytes:", assertion.response.signature.byteLength);
 }
 
