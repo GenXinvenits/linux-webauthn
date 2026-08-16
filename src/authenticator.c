@@ -1,9 +1,22 @@
 #include "authenticator.h"
 #include "ctap.h"
+#include "fido_hid.h"
 
+#include <glib.h>
 #include <stdio.h>
 
 static int initialized = 0;
+static GThread *fido_hid_thread = NULL;
+
+static gpointer fido_hid_thread_main(gpointer user_data)
+{
+    (void)user_data;
+
+    if (fido_hid_run() != 0)
+        fprintf(stderr, "LINUX WebAuthn: FIDO HID transport stopped with an error\n");
+
+    return NULL;
+}
 
 int authenticator_init(void)
 {
@@ -15,6 +28,17 @@ int authenticator_init(void)
         "LINUX WebAuthn: initializing authenticator\n");
 
     ctap_init();
+
+    fido_hid_thread = g_thread_new(
+        "fido-hid",
+        fido_hid_thread_main,
+        NULL);
+
+    if (!fido_hid_thread) {
+        fprintf(stderr, "LINUX WebAuthn: failed to start FIDO HID thread\n");
+        ctap_cleanup();
+        return -1;
+    }
 
     initialized = 1;
 
@@ -29,6 +53,13 @@ void authenticator_cleanup(void)
     fprintf(
         stderr,
         "LINUX WebAuthn: shutting down authenticator\n");
+
+    fido_hid_stop();
+
+    if (fido_hid_thread) {
+        g_thread_join(fido_hid_thread);
+        fido_hid_thread = NULL;
+    }
 
     ctap_cleanup();
 
