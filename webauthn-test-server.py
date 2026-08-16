@@ -14,8 +14,7 @@ PORT = 8080
 ORIGIN = f"http://localhost:{PORT}"
 RP_ID = "localhost"
 
-# The test server keeps all registered credentials so that multiple
-# discoverable credentials for the same RP can be exercised.
+STATE_FILE = os.path.expanduser("~/.local/state/linux-webauthn-test/credentials.json")
 credentials = {}
 pending_register = None
 pending_authenticate = None
@@ -35,6 +34,64 @@ def json_bytes(value):
 
 def fail(message):
     raise ValueError(message)
+
+
+def load_credentials():
+    global credentials
+    try:
+        with open(STATE_FILE, "r", encoding="utf-8") as fp:
+            stored = json.load(fp)
+    except FileNotFoundError:
+        credentials = {}
+        return
+    except Exception as exc:
+        print(f"WARNING: unable to load test-server credential state: {exc}")
+        credentials = {}
+        return
+
+    if not isinstance(stored, dict):
+        print("WARNING: invalid test-server credential state; starting empty")
+        credentials = {}
+        return
+
+    loaded = {}
+    for credential_id, credential in stored.items():
+        if not isinstance(credential, dict):
+            continue
+        try:
+            loaded[credential_id] = {
+                "id": unb64u(credential["id"]),
+                "public_key": unb64u(credential["public_key"]),
+                "counter": int(credential.get("counter", 0)),
+                "flags": int(credential.get("flags", 0)),
+            }
+        except Exception:
+            print(f"WARNING: skipping invalid stored credential {credential_id}")
+
+    credentials = loaded
+    print(f"Loaded {len(credentials)} persisted test-server credential(s)")
+
+
+def save_credentials():
+    directory = os.path.dirname(STATE_FILE)
+    os.makedirs(directory, mode=0o700, exist_ok=True)
+
+    stored = {
+        credential_id: {
+            "id": b64u(credential["id"]),
+            "public_key": b64u(credential["public_key"]),
+            "counter": credential["counter"],
+            "flags": credential["flags"],
+        }
+        for credential_id, credential in credentials.items()
+    }
+
+    temporary = STATE_FILE + ".tmp"
+    with open(temporary, "w", encoding="utf-8") as fp:
+        json.dump(stored, fp, indent=2, sort_keys=True)
+        fp.write("\n")
+    os.replace(temporary, STATE_FILE)
+    os.chmod(STATE_FILE, 0o600)
 
 
 def parse_client_data(raw):
@@ -65,10 +122,8 @@ def verify_registration(body):
     public_key_spki = unb64u(body["publicKey"])
 
     verify_client_data(client_data, "webauthn.create", pending_register)
-
     if len(auth_data) < 37:
         fail("authenticatorData is too short")
-
     if auth_data[:32] != hashlib.sha256(RP_ID.encode()).digest():
         fail("registration RP ID hash mismatch")
 
@@ -80,20 +135,23 @@ def verify_registration(body):
     if not (flags & 0x40):
         fail("registration AT flag missing")
 
-    credential = {
+    credential_id = b64u(raw_id)
+    credentials[credential_id] = {
         "id": raw_id,
         "public_key": public_key_spki,
         "counter": int.from_bytes(auth_data[33:37], "big"),
         "flags": flags,
     }
-    credentials[b64u(raw_id)] = credential
+    save_credentials()
     pending_register = None
+
+    print(f"Registered credential {credential_id}; total credentials: {len(credentials)}")
 
     return {
         "ok": True,
         "message": "Registration verified",
-        "credentialId": b64u(raw_id),
-        "counter": credential["counter"],
+        "credentialId": credential_id,
+        "counter": credentials[credential_id]["counter"],
         "storedCredentials": len(credentials),
     }
 
@@ -110,15 +168,16 @@ def verify_signature(public_key_spki, signature, signed_data):
         open(data_path, "wb").write(signed_data)
 
         r = subprocess.run(
-            ["openssl", "pkey", "-pubin", "-inform", "DER", "-in", key_path,
-             "-out", pem_path], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            ["openssl", "pkey", "-pubin", "-inform", "DER", "-in", key_path, "-out", pem_path],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
         if r.returncode != 0:
             fail("stored public key is invalid")
 
         r = subprocess.run(
-            ["openssl", "dgst", "-sha256", "-verify", pem_path,
-             "-signature", sig_path, data_path],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            ["openssl", "dgst", "-sha256", "-verify", pem_path, "-signature", sig_path, data_path],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )
         if r.returncode != 0 or r.stdout.strip() != "Verified OK":
             fail("WebAuthn signature verification failed")
 
@@ -133,12 +192,14 @@ def verify_authentication(body):
     auth_data = unb64u(body["authenticatorData"])
     signature = unb64u(body["signature"])
 
-    credential = credentials.get(b64u(raw_id))
+    credential_id = b64u(raw_id)
+    credential = credentials.get(credential_id)
+    print(f"Authentication selected credential {credential_id}; server knows {len(credentials)} credential(s)")
+
     if credential is None:
         fail("credential ID is not registered on the test server")
 
     verify_client_data(client_data, "webauthn.get", pending_authenticate)
-
     if len(auth_data) < 37:
         fail("authenticatorData is too short")
     if auth_data[:32] != hashlib.sha256(RP_ID.encode()).digest():
@@ -159,12 +220,13 @@ def verify_authentication(body):
     verify_signature(credential["public_key"], signature, signed_data)
 
     credential["counter"] = counter
+    save_credentials()
     pending_authenticate = None
 
     return {
         "ok": True,
         "message": "Authentication verified",
-        "credentialId": b64u(raw_id),
+        "credentialId": credential_id,
         "counter": counter,
         "previousCounter": old_counter,
         "rpIdHash": "PASS",
@@ -204,20 +266,29 @@ class Handler(SimpleHTTPRequestHandler):
     def do_GET(self):
         global pending_register, pending_authenticate
         path = urlparse(self.path).path
+
         if path == "/webauthn/register-options":
             pending_register = os.urandom(32)
-            self._json(200, {"challenge": b64u(pending_register), "rpId": RP_ID,
-                             "rpName": "Linux WebAuthn Test"})
+            self._json(200, {
+                "challenge": b64u(pending_register),
+                "rpId": RP_ID,
+                "rpName": "Linux WebAuthn Test",
+            })
             return
+
         if path == "/webauthn/authenticate-options":
             if not credentials:
                 self._json(400, {"error": "register a resident credential first"})
                 return
+
             pending_authenticate = os.urandom(32)
-            # Deliberately do not return credentialId. The browser must
-            # perform discoverable-credential selection at the authenticator.
-            self._json(200, {"challenge": b64u(pending_authenticate), "rpId": RP_ID})
+            self._json(200, {
+                "challenge": b64u(pending_authenticate),
+                "rpId": RP_ID,
+                "storedCredentials": len(credentials),
+            })
             return
+
         super().do_GET()
 
     def log_message(self, fmt, *args):
@@ -225,7 +296,9 @@ class Handler(SimpleHTTPRequestHandler):
 
 
 if __name__ == "__main__":
+    load_credentials()
     print(f"Linux WebAuthn test server: {ORIGIN}")
     print("Server-side WebAuthn verification enabled")
     print("Resident/discoverable credential authentication enabled")
+    print(f"Credential state file: {STATE_FILE}")
     ThreadingHTTPServer((HOST, PORT), Handler).serve_forever()
