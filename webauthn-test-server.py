@@ -14,7 +14,9 @@ PORT = 8080
 ORIGIN = f"http://localhost:{PORT}"
 RP_ID = "localhost"
 
-credential = None
+# The test server keeps all registered credentials so that multiple
+# discoverable credentials for the same RP can be exercised.
+credentials = {}
 pending_register = None
 pending_authenticate = None
 
@@ -53,7 +55,7 @@ def verify_client_data(raw, expected_type, expected_challenge):
 
 
 def verify_registration(body):
-    global credential, pending_register
+    global pending_register
     if pending_register is None:
         fail("no pending registration challenge")
 
@@ -84,6 +86,7 @@ def verify_registration(body):
         "counter": int.from_bytes(auth_data[33:37], "big"),
         "flags": flags,
     }
+    credentials[b64u(raw_id)] = credential
     pending_register = None
 
     return {
@@ -91,6 +94,7 @@ def verify_registration(body):
         "message": "Registration verified",
         "credentialId": b64u(raw_id),
         "counter": credential["counter"],
+        "storedCredentials": len(credentials),
     }
 
 
@@ -120,9 +124,7 @@ def verify_signature(public_key_spki, signature, signed_data):
 
 
 def verify_authentication(body):
-    global credential, pending_authenticate
-    if credential is None:
-        fail("no registered credential on the test server")
+    global pending_authenticate
     if pending_authenticate is None:
         fail("no pending authentication challenge")
 
@@ -131,10 +133,12 @@ def verify_authentication(body):
     auth_data = unb64u(body["authenticatorData"])
     signature = unb64u(body["signature"])
 
+    credential = credentials.get(b64u(raw_id))
+    if credential is None:
+        fail("credential ID is not registered on the test server")
+
     verify_client_data(client_data, "webauthn.get", pending_authenticate)
 
-    if raw_id != credential["id"]:
-        fail("credential ID mismatch")
     if len(auth_data) < 37:
         fail("authenticatorData is too short")
     if auth_data[:32] != hashlib.sha256(RP_ID.encode()).digest():
@@ -206,12 +210,13 @@ class Handler(SimpleHTTPRequestHandler):
                              "rpName": "Linux WebAuthn Test"})
             return
         if path == "/webauthn/authenticate-options":
-            if credential is None:
-                self._json(400, {"error": "register a credential first"})
+            if not credentials:
+                self._json(400, {"error": "register a resident credential first"})
                 return
             pending_authenticate = os.urandom(32)
-            self._json(200, {"challenge": b64u(pending_authenticate), "rpId": RP_ID,
-                             "credentialId": b64u(credential["id"])})
+            # Deliberately do not return credentialId. The browser must
+            # perform discoverable-credential selection at the authenticator.
+            self._json(200, {"challenge": b64u(pending_authenticate), "rpId": RP_ID})
             return
         super().do_GET()
 
@@ -222,4 +227,5 @@ class Handler(SimpleHTTPRequestHandler):
 if __name__ == "__main__":
     print(f"Linux WebAuthn test server: {ORIGIN}")
     print("Server-side WebAuthn verification enabled")
+    print("Resident/discoverable credential authentication enabled")
     ThreadingHTTPServer((HOST, PORT), Handler).serve_forever()
