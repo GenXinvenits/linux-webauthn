@@ -33,28 +33,6 @@ static void print_hex(
     printf("\n");
 }
 
-static CborValue *find_map_text_key(
-    CborValue *map,
-    const char *key)
-{
-    if (!map ||
-        !key ||
-        !cbor_is_type(map, CBOR_TYPE_MAP))
-        return NULL;
-
-    for (size_t i = 0; i < map->map.count; i++) {
-        CborValue *k = map->map.keys[i];
-
-        if (k &&
-            cbor_is_type(k, CBOR_TYPE_TEXT) &&
-            k->text.data &&
-            strcmp(k->text.data, key) == 0)
-            return map->map.values[i];
-    }
-
-    return NULL;
-}
-
 static CborValue *find_map_negative_key(
     CborValue *map,
     int64_t key)
@@ -487,7 +465,7 @@ int main(void)
         goto cleanup;
     }
 
-    auth_data = cbor_map_get_text(response, "authData");
+    auth_data = cbor_map_get_uint(response, 2);
     if (!auth_data || !cbor_is_type(auth_data, CBOR_TYPE_BYTES)) {
         fprintf(stderr, "makeCredential response has no authData\n");
         goto cleanup;
@@ -541,7 +519,7 @@ int main(void)
         goto cleanup;
     }
 
-    auth_data = cbor_map_get_text(response, "authData");
+    auth_data = cbor_map_get_uint(response, 2);
     if (!auth_data || !cbor_is_type(auth_data, CBOR_TYPE_BYTES) ||
         auth_data->bytes.length < 37) {
         fprintf(stderr, "getAssertion response has invalid authData\n");
