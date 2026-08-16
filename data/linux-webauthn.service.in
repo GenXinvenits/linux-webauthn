@@ -1,0 +1,19 @@
+[Unit]
+Description=LINUX WebAuthn authenticator
+Documentation=https://github.com/GenXinvenits/linux-webauthn
+After=graphical-session-pre.target
+Wants=graphical-session-pre.target
+
+[Service]
+Type=dbus
+BusName=org.linux.WebAuthn
+ExecStart=@bindir@/linux-webauthn
+Restart=on-failure
+RestartSec=2s
+
+# Keep the authenticator in the user's session. No root privileges are required.
+NoNewPrivileges=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=default.target

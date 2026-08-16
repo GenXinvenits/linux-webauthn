@@ -1,0 +1,17 @@
+#!/usr/bin/make -f
+
+export DEB_BUILD_MAINT_OPTIONS = hardening=+all
+
+%:
+	dh $@ --buildsystem=meson
+
+# Meson already installs the production user unit and its vendor wants-link.
+# Keep the user-service integration in /usr/lib/systemd/user and let
+# dh_installsystemduser generate the package lifecycle maintainer snippets.
+override_dh_installsystemduser:
+	dh_installsystemduser linux-webauthn.service
+
+# Keep the upstream rule name 70-linux-webauthn.rules while allowing
+# dh_installudev to generate Debian's udev integration snippets.
+override_dh_installudev:
+	dh_installudev --name=linux-webauthn --priority=70

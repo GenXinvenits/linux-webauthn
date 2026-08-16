@@ -1,0 +1,31 @@
+Source: linux-webauthn
+Section: utils
+Priority: optional
+Maintainer: GenXinvenits <genxinvenits@users.noreply.github.com>
+Build-Depends:
+ debhelper-compat (= 13),
+ meson,
+ ninja-build,
+ pkg-config,
+ libglib2.0-dev,
+ libjson-glib-dev,
+ libssl-dev,
+ libtss2-dev
+Standards-Version: 4.7.0
+Homepage: https://github.com/GenXinvenits/linux-webauthn
+Rules-Requires-Root: no
+
+Package: linux-webauthn
+Architecture: any
+Depends:
+ ${shlibs:Depends},
+ ${misc:Depends},
+ fprintd
+Description: Linux-native WebAuthn/FIDO2 authenticator bridge
+ Linux WebAuthn provides a native Linux WebAuthn/FIDO2 authenticator bridge
+ for desktop systems. It integrates fingerprint verification, TPM-backed
+ credential handling, D-Bus, and a virtual FIDO HID authenticator so that
+ browsers can use local Linux authentication hardware for WebAuthn.
+ .
+ The service runs in the logged-in user's systemd user session and does not
+ require the authenticator daemon itself to run as root.
