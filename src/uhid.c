@@ -196,6 +196,34 @@ int uhid_read_output(uint8_t *data, size_t data_size, size_t *data_len)
                     output_size,
                     event.u.output.rtype);
 
+            /*
+             * hidraw output writes carry a leading report-number byte.
+             * For an unnumbered HID report that byte must be zero.  The
+             * FIDO HID report itself is 64 bytes, so libfido2 writes 65
+             * bytes (0 + 64-byte CTAPHID report).  UHID forwards that
+             * output buffer to userspace; remove the hidraw report-number
+             * byte before handing the CTAPHID transport its 64-byte report.
+             */
+            if (output_size == data_size + 1 &&
+                event.u.output.data[0] == 0) {
+                if ((size_t)n < offsetof(struct uhid_event, u.output.data) +
+                                 output_size) {
+                    fprintf(stderr,
+                            "UHID_OUTPUT: truncated payload (%zd bytes, need %zu)\n",
+                            n,
+                            offsetof(struct uhid_event, u.output.data) + output_size);
+                    return -1;
+                }
+
+                memcpy(data,
+                       event.u.output.data + 1,
+                       data_size);
+                *data_len = data_size;
+                dump_bytes("UHID_OUTPUT: RX (report-id stripped)",
+                           data, data_size);
+                return 0;
+            }
+
             if (output_size > data_size) {
                 fprintf(stderr,
                         "UHID_OUTPUT: report too large (%zu > %zu)\n",
