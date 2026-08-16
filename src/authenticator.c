@@ -82,6 +82,7 @@ int authenticator_process(
     int uv_status;
     int rc;
     uint8_t command;
+    int response_ok;
 
     if (!initialized)
         return -1;
@@ -141,12 +142,16 @@ int authenticator_process(
         output,
         output_len);
 
+    response_ok = output && *output && *output_len > 0 &&
+                  (*output)[0] == CTAP2_OK;
+
     /*
-     * Keep successful UV alive only long enough for the immediate
-     * GetNextAssertion sequence. A new GetAssertion will perform its own
-     * fingerprint verification through ctap_prepare_user_verification().
+     * Keep successful UV alive only for an immediately following
+     * GetNextAssertion sequence. If the GetAssertion itself failed, there
+     * is no valid assertion sequence to authorize, so clear UV immediately.
+     * A new GetAssertion will perform its own fingerprint verification.
      */
-    if (command != CTAP_CMD_GET_ASSERTION)
+    if (command != CTAP_CMD_GET_ASSERTION || !response_ok)
         ctap_set_user_verified(0);
 
     g_mutex_unlock(&process_mutex);
