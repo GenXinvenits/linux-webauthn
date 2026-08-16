@@ -1,0 +1,5 @@
+/build/
+
+/linux-webauthn
+/ctap-makecredential-test
+/webauthn-dbus-assertion-test

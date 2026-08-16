@@ -17,5 +17,4 @@ openssl_dep = dependency('openssl')
 tss2_esys_dep = dependency('tss2-esys')
 
 subdir('src')
-subdir('browser/native')
 subdir('data')
