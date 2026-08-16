@@ -4,6 +4,8 @@
 
 #include <glib.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <stdint.h>
 
 static int initialized = 0;
 static GThread *fido_hid_thread = NULL;
@@ -72,8 +74,40 @@ int authenticator_process(
     uint8_t **output,
     size_t *output_len)
 {
+    int uv_status;
+
     if (!initialized)
         return -1;
+
+    /*
+     * CTAP owns the user-verification policy. The transport layer
+     * only carries the request and must not decide when fingerprint
+     * verification is required.
+     */
+    if (ctap_is_user_verified()) {
+        uv_status = CTAP2_OK;
+    } else {
+        uv_status = ctap_prepare_user_verification(
+            input,
+            input_len);
+    }
+
+    if (uv_status != CTAP2_OK) {
+        if (!output || !output_len)
+            return -1;
+
+        *output = malloc(1);
+
+        if (!*output) {
+            *output_len = 0;
+            return -1;
+        }
+
+        (*output)[0] = (uint8_t)uv_status;
+        *output_len = 1;
+
+        return 0;
+    }
 
     return ctap_process(
         input,
