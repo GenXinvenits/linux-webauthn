@@ -86,12 +86,32 @@ int uhid_read_output(uint8_t *data, size_t data_size, size_t *data_len)
             return -1;
 
         switch (event.type) {
-        case UHID_OUTPUT:
-            if (event.u.output.size > data_size)
+        case UHID_OUTPUT: {
+            size_t output_size = event.u.output.size;
+
+            /*
+             * hidraw writes include a leading report-ID byte even when the
+             * HID descriptor has no Report ID item. libfido2 writes a 65-byte
+             * buffer (report ID + 64-byte FIDO HID report), while UHID exposes
+             * that complete buffer through UHID_OUTPUT. Strip the report ID
+             * before handing the CTAPHID transport its 64-byte report.
+             */
+            if (output_size == data_size + 1 &&
+                event.u.output.data[0] == 0) {
+                memcpy(data,
+                       event.u.output.data + 1,
+                       data_size);
+                *data_len = data_size;
+                return 0;
+            }
+
+            if (output_size > data_size)
                 return -1;
-            memcpy(data, event.u.output.data, event.u.output.size);
-            *data_len = event.u.output.size;
+
+            memcpy(data, event.u.output.data, output_size);
+            *data_len = output_size;
             return 0;
+        }
 
         case UHID_OPEN:
         case UHID_CLOSE:
