@@ -73,6 +73,16 @@ int ctap_is_user_verified(void);
 
 
 /*
+ * Prepare user verification for a CTAP operation.
+ *
+ * Returns CTAP2_OK when no UV is requested or when fingerprint
+ * verification succeeds. Returns a CTAP2 error status otherwise.
+ */
+int ctap_prepare_user_verification(
+    const uint8_t *input,
+    size_t input_len);
+
+/*
  * Release CTAP authenticator state.
  */
 void ctap_cleanup(void);
