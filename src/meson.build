@@ -25,3 +25,17 @@ executable(
 
   install: true
 )
+
+executable(
+  'webauthn-dbus-assertion-test',
+  '../webauthn-dbus-assertion-test.c',
+  'cbor.c',
+
+  dependencies: [
+    glib_dep,
+    gio_dep,
+    openssl_dep
+  ],
+
+  install: false
+)
