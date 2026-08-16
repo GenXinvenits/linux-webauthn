@@ -1,3 +1,5 @@
+#define _GNU_SOURCE
+
 #include "uhid.h"
 
 #include <errno.h>
