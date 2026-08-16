@@ -13,5 +13,5 @@ install_data(
 
 install_data(
   '70-linux-webauthn.rules',
-  install_dir: get_option('libdir') / 'udev/rules.d'
+  install_dir: get_option('prefix') / 'lib/udev/rules.d'
 )
