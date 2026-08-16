@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Linux WebAuthn Test</title>
+</head>
+<body>
+<h2>Linux WebAuthn — Browser Test</h2>
+<button id="register">Register credential</button>
+<button id="authenticate">Authenticate</button>
+<pre id="out">Ready.</pre>
+
+<script>
+const out = document.getElementById("out");
+const log = (...args) => { out.textContent += "\n" + args.join(" "); };
+const randomBytes = n => crypto.getRandomValues(new Uint8Array(n));
+const b64url = bytes => {
+  let s = "";
+  for (const b of bytes) s += String.fromCharCode(b);
+  return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+};
+
+const RP = { id: "localhost", name: "Linux WebAuthn Test" };
+const USER = {
+  id: new TextEncoder().encode("linux-webauthn-test-user"),
+  name: "linux-webauthn-test",
+  displayName: "Linux WebAuthn Test User"
+};
+
+let credentialId = null;
+
+async function register() {
+  out.textContent = "Starting browser registration...";
+
+  const credential = await navigator.credentials.create({
+    publicKey: {
+      rp: RP,
+      user: USER,
+      challenge: randomBytes(32),
+      pubKeyCredParams: [
+        { type: "public-key", alg: -7 }
+      ],
+      authenticatorSelection: {
+        userVerification: "required"
+      },
+      timeout: 60000,
+      attestation: "none"
+    }
+  });
+
+  if (!credential) throw new Error("No credential returned");
+
+  credentialId = new Uint8Array(credential.rawId);
+  out.textContent = "Browser registration succeeded.";
+  log("credential ID:", b64url(credentialId));
+  log("type:", credential.type);
+  log("authenticatorData bytes:", credential.response.getAuthenticatorData().byteLength);
+}
+
+async function authenticate() {
+  if (!credentialId)
+    throw new Error("Register a credential first in this page");
+
+  out.textContent = "Starting browser authentication...";
+
+  const assertion = await navigator.credentials.get({
+    publicKey: {
+      rpId: RP.id,
+      challenge: randomBytes(32),
+      allowCredentials: [{
+        type: "public-key",
+        id: credentialId
+      }],
+      userVerification: "required",
+      timeout: 60000
+    }
+  });
+
+  if (!assertion) throw new Error("No assertion returned");
+
+  out.textContent = "Browser authentication succeeded.";
+  log("credential ID:", b64url(new Uint8Array(assertion.rawId)));
+  log("authenticatorData bytes:", assertion.response.getAuthenticatorData().byteLength);
+  log("signature bytes:", assertion.response.signature.byteLength);
+}
+
+document.getElementById("register").onclick = () =>
+  register().catch(e => {
+    out.textContent = "REGISTER ERROR: " + e.name + "\n" + e.message;
+    console.error(e);
+  });
+
+document.getElementById("authenticate").onclick = () =>
+  authenticate().catch(e => {
+    out.textContent = "AUTHENTICATE ERROR: " + e.name + "\n" + e.message;
+    console.error(e);
+  });
+</script>
+</body>
+</html>
