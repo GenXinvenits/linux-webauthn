@@ -11,8 +11,7 @@ export DEB_BUILD_MAINT_OPTIONS = hardening=+all
 override_dh_installsystemduser:
 	dh_installsystemduser linux-webauthn.service
 
-# The upstream Meson install already places the exact 70-linux-webauthn.rules
-# file. Re-run the udev helper with the same name so Debian generates the
-# appropriate udev integration snippets without changing the installed name.
+# Keep the upstream rule name 70-linux-webauthn.rules while allowing
+# dh_installudev to generate Debian's udev integration snippets.
 override_dh_installudev:
-	dh_installudev --name=70-linux-webauthn
+	dh_installudev --name=linux-webauthn --priority=70
