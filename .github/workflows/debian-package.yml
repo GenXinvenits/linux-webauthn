@@ -23,6 +23,7 @@ jobs:
             build-essential \
             debhelper \
             devscripts \
+            lintian \
             meson \
             ninja-build \
             pkg-config \
@@ -35,10 +36,38 @@ jobs:
       - name: Build Debian package
         run: dpkg-buildpackage -us -uc -b
 
-      - name: Inspect package
+      - name: Inspect package contents
+        shell: bash
         run: |
-          dpkg-deb --info ../linux-webauthn_*.deb
-          dpkg-deb --contents ../linux-webauthn_*.deb
+          set -euo pipefail
+          deb="$(find .. -maxdepth 1 -type f -name 'linux-webauthn_*.deb' -print -quit)"
+          test -n "$deb"
+
+          dpkg-deb --info "$deb"
+          dpkg-deb --contents "$deb"
+
+          contents="$(dpkg-deb --contents "$deb")"
+          for required in \
+            './usr/bin/linux-webauthn' \
+            './usr/share/dbus-1/services/org.linux.WebAuthn.service' \
+            './usr/lib/systemd/user/linux-webauthn.service' \
+            './usr/lib/systemd/user/default.target.wants/linux-webauthn.service' \
+            './usr/lib/udev/rules.d/70-linux-webauthn.rules'; do
+            grep -Fq "$required" <<<"$contents" || {
+              echo "ERROR: missing required package file: $required" >&2
+              exit 1
+            }
+          done
+
+          workdir="$(mktemp -d)"
+          dpkg-deb -e "$deb" "$workdir/control"
+          test -f "$workdir/control/postinst"
+          grep -Fq 'deb-systemd-helper' "$workdir/control/postinst"
+
+      - name: Lint package
+        run: |
+          deb="$(find .. -maxdepth 1 -type f -name 'linux-webauthn_*.deb' -print -quit)"
+          lintian --no-tag-display-limit "$deb"
 
       - name: Upload Debian package
         uses: actions/upload-artifact@v4
