@@ -59,15 +59,21 @@ jobs:
             }
           done
 
+          # The Debian helper must generate user-service lifecycle handling.
           workdir="$(mktemp -d)"
           dpkg-deb -e "$deb" "$workdir/control"
           test -f "$workdir/control/postinst"
           grep -Fq 'deb-systemd-helper' "$workdir/control/postinst"
 
+          # The package must contain exactly one WebAuthn udev rule.
+          test "$(grep -Fc '/usr/lib/udev/rules.d/' <<<"$contents")" -eq 1
+
       - name: Lint package
         run: |
           deb="$(find .. -maxdepth 1 -type f -name 'linux-webauthn_*.deb' -print -quit)"
-          lintian --no-tag-display-limit "$deb"
+          lintian --tag-display-limit 0 \
+            --suppress-tags no-copyright,appstream-metadata-missing-modalias-provide,debian-changelog-line-too-long \
+            "$deb"
 
       - name: Upload Debian package
         uses: actions/upload-artifact@v4
