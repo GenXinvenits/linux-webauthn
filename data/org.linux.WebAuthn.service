@@ -1,3 +1,3 @@
 [D-BUS Service]
-Name=org.gnome.WebAuthn
-Exec=/home/ubuntu/gnome-webauthn/gnome-webauthn
+Name=org.linux.WebAuthn
+Exec=@bindir@/linux-webauthn
