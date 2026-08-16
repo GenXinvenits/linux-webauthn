@@ -8,10 +8,10 @@
 
 #define CTAP_CMD_MAKE_CREDENTIAL       0x01
 #define CTAP_CMD_GET_ASSERTION         0x02
+#define CTAP_CMD_GET_INFO              0x04
 #define CTAP_CMD_CLIENT_PIN            0x06
 #define CTAP_CMD_RESET                 0x07
 #define CTAP_CMD_GET_NEXT_ASSERTION    0x08
-#define CTAP_CMD_GET_INFO              0x04
 
 #define CTAP2_OK                       0x00
 #define CTAP2_ERR_INVALID_COMMAND      0x01
@@ -54,12 +54,6 @@ typedef struct {
 void ctap_init(void);
 void ctap_set_user_verified(int verified);
 int ctap_is_user_verified(void);
-
-/*
- * Returns non-zero while a GetAssertion operation has additional
- * assertions available through CTAP_CMD_GET_NEXT_ASSERTION.
- */
-int ctap_assertion_is_active(void);
 
 /*
  * Prepare user verification for one CTAP operation.
