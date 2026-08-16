@@ -1,0 +1,7 @@
+linux-webauthn (0.1-1) unstable; urgency=medium
+
+  * Initial Debian package for the Linux WebAuthn authenticator.
+  * Install the user-session systemd service, D-Bus service, and UHID udev rule.
+  * Preserve automatic startup of the authenticator in the logged-in user session.
+
+ -- GenXinvenits <14211793+GenXinvenits@users.noreply.github.com>  Sun, 16 Aug 2026 14:00:00 +0530
