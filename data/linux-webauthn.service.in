@@ -7,7 +7,11 @@ Wants=graphical-session-pre.target
 [Service]
 Type=dbus
 BusName=org.linux.WebAuthn
+
+# Wait until UHID exists and the current user has read/write access.
+ExecStartPre=/bin/sh -c 'while [ ! -r /dev/uhid ] || [ ! -w /dev/uhid ]; do sleep 0.1; done'
 ExecStart=@bindir@/linux-webauthn
+
 Restart=on-failure
 RestartSec=2s
 
