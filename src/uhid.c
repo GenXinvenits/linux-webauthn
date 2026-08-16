@@ -15,6 +15,65 @@
 
 static int uhid_fd = -1;
 
+static int uhid_send_get_report_error(uint32_t id)
+{
+    struct uhid_event event;
+    ssize_t n;
+
+    memset(&event, 0, sizeof(event));
+    event.type = UHID_GET_REPORT_REPLY;
+    event.u.get_report_reply.id = id;
+    event.u.get_report_reply.err = EIO;
+    event.u.get_report_reply.size = 0;
+
+    n = write(uhid_fd, &event,
+              offsetof(struct uhid_event, u.get_report_reply.data));
+
+    if (n < 0) {
+        perror("UHID_GET_REPORT_REPLY");
+        return -1;
+    }
+
+    if ((size_t)n != offsetof(struct uhid_event, u.get_report_reply.data)) {
+        fprintf(stderr,
+                "UHID_GET_REPORT_REPLY: short write (%zd)\n", n);
+        return -1;
+    }
+
+    fprintf(stderr,
+            "UHID: GET_REPORT id=%u -> EIO\n", id);
+    return 0;
+}
+
+static int uhid_send_set_report_error(uint32_t id)
+{
+    struct uhid_event event;
+    ssize_t n;
+
+    memset(&event, 0, sizeof(event));
+    event.type = UHID_SET_REPORT_REPLY;
+    event.u.set_report_reply.id = id;
+    event.u.set_report_reply.err = EIO;
+
+    n = write(uhid_fd, &event, sizeof(event.type) +
+              sizeof(event.u.set_report_reply));
+
+    if (n < 0) {
+        perror("UHID_SET_REPORT_REPLY");
+        return -1;
+    }
+
+    if ((size_t)n != sizeof(event.type) + sizeof(event.u.set_report_reply)) {
+        fprintf(stderr,
+                "UHID_SET_REPORT_REPLY: short write (%zd)\n", n);
+        return -1;
+    }
+
+    fprintf(stderr,
+            "UHID: SET_REPORT id=%u -> EIO\n", id);
+    return 0;
+}
+
 int uhid_open(const uint8_t *report_descriptor, size_t report_descriptor_len)
 {
     struct uhid_event event;
@@ -61,6 +120,10 @@ int uhid_open(const uint8_t *report_descriptor, size_t report_descriptor_len)
         return -1;
     }
 
+    fprintf(stderr,
+            "UHID: CREATE2 descriptor=%zu bytes\n",
+            report_descriptor_len);
+
     return 0;
 }
 
@@ -85,17 +148,20 @@ int uhid_read_output(uint8_t *data, size_t data_size, size_t *data_len)
             return -1;
         }
 
-        /*
-         * UHID intentionally allows short event reads.  The kernel only
-         * returns the portion of struct uhid_event needed by the event type;
-         * userspace must accept the short read and zero-extend it.  Requiring
-         * sizeof(struct uhid_event) here makes every UHID_OUTPUT packet look
-         * like a malformed event and tears down the FIDO HID transport.
-         */
-        if (n < (ssize_t)sizeof(event.type)) {
-            fprintf(stderr, "UHID read: short event (%zd bytes)\n", n);
+        if (n == 0) {
+            fprintf(stderr, "UHID read: EOF\n");
             return -1;
         }
+
+        if (n < (ssize_t)sizeof(event.type)) {
+            fprintf(stderr,
+                    "UHID read: short event (%zd bytes)\n", n);
+            return -1;
+        }
+
+        fprintf(stderr,
+                "UHID: event type=%u read=%zd bytes\n",
+                event.type, n);
 
         switch (event.type) {
         case UHID_OUTPUT: {
@@ -103,11 +169,17 @@ int uhid_read_output(uint8_t *data, size_t data_size, size_t *data_len)
 
             if ((size_t)n < offsetof(struct uhid_event, u.output.size) +
                              sizeof(event.u.output.size)) {
-                fprintf(stderr, "UHID_OUTPUT: truncated event (%zd bytes)\n", n);
+                fprintf(stderr,
+                        "UHID_OUTPUT: truncated event (%zd bytes)\n", n);
                 return -1;
             }
 
             output_size = event.u.output.size;
+
+            fprintf(stderr,
+                    "UHID_OUTPUT: size=%zu rtype=%u\n",
+                    output_size,
+                    event.u.output.rtype);
 
             if (output_size > data_size) {
                 fprintf(stderr,
@@ -130,15 +202,38 @@ int uhid_read_output(uint8_t *data, size_t data_size, size_t *data_len)
             return 0;
         }
 
+        case UHID_GET_REPORT:
+            if (uhid_send_get_report_error(event.u.get_report.id) != 0)
+                return -1;
+            break;
+
+        case UHID_SET_REPORT:
+            if (uhid_send_set_report_error(event.u.set_report.id) != 0)
+                return -1;
+            break;
+
         case UHID_OPEN:
+            fprintf(stderr, "UHID: OPEN\n");
+            break;
+
         case UHID_CLOSE:
+            fprintf(stderr, "UHID: CLOSE\n");
+            break;
+
         case UHID_START:
+            fprintf(stderr,
+                    "UHID: START flags=0x%llx\n",
+                    (unsigned long long)event.u.start.dev_flags);
+            break;
+
         case UHID_STOP:
-        case UHID_OUTPUT_EV:
+            fprintf(stderr, "UHID: STOP\n");
             break;
 
         default:
-            fprintf(stderr, "UHID: ignoring event type %u\n", event.type);
+            fprintf(stderr,
+                    "UHID: ignoring event type %u\n",
+                    event.type);
             break;
         }
     }
@@ -147,6 +242,8 @@ int uhid_read_output(uint8_t *data, size_t data_size, size_t *data_len)
 int uhid_send_input(const uint8_t *data, size_t data_len)
 {
     struct uhid_event event;
+    ssize_t n;
+    size_t event_len;
 
     if (!data || data_len > sizeof(event.u.input2.data) || uhid_fd < 0)
         return -1;
@@ -156,9 +253,24 @@ int uhid_send_input(const uint8_t *data, size_t data_len)
     event.u.input2.size = data_len;
     memcpy(event.u.input2.data, data, data_len);
 
-    if (write(uhid_fd, &event,
-              offsetof(struct uhid_event, u.input2.data) + data_len) < 0)
+    event_len = offsetof(struct uhid_event, u.input2.data) + data_len;
+    n = write(uhid_fd, &event, event_len);
+
+    if (n < 0) {
+        perror("UHID_INPUT2");
         return -1;
+    }
+
+    if ((size_t)n != event_len) {
+        fprintf(stderr,
+                "UHID_INPUT2: short write (%zd/%zu)\n",
+                n, event_len);
+        return -1;
+    }
+
+    fprintf(stderr,
+            "UHID: INPUT2 size=%zu\n",
+            data_len);
 
     return 0;
 }
@@ -176,4 +288,6 @@ void uhid_close(void)
 
     close(uhid_fd);
     uhid_fd = -1;
+
+    fprintf(stderr, "UHID: closed\n");
 }
