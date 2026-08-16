@@ -15,6 +15,16 @@
 
 static int uhid_fd = -1;
 
+static void dump_bytes(const char *prefix, const uint8_t *data, size_t len)
+{
+    size_t n = len > FIDO_REPORT_SIZE ? FIDO_REPORT_SIZE : len;
+
+    fprintf(stderr, "%s len=%zu", prefix, len);
+    for (size_t i = 0; i < n; i++)
+        fprintf(stderr, " %02x", data[i]);
+    fprintf(stderr, "\n");
+}
+
 static int uhid_send_get_report_error(uint32_t id)
 {
     struct uhid_event event;
@@ -30,7 +40,8 @@ static int uhid_send_get_report_error(uint32_t id)
               offsetof(struct uhid_event, u.get_report_reply.data));
 
     if (n < 0) {
-        perror("UHID_GET_REPORT_REPLY");
+        fprintf(stderr, "UHID_GET_REPORT_REPLY: write failed: %s\n",
+                strerror(errno));
         return -1;
     }
 
@@ -59,7 +70,8 @@ static int uhid_send_set_report_error(uint32_t id)
               sizeof(event.u.set_report_reply));
 
     if (n < 0) {
-        perror("UHID_SET_REPORT_REPLY");
+        fprintf(stderr, "UHID_SET_REPORT_REPLY: write failed: %s\n",
+                strerror(errno));
         return -1;
     }
 
@@ -87,7 +99,8 @@ int uhid_open(const uint8_t *report_descriptor, size_t report_descriptor_len)
 
     uhid_fd = open(UHID_DEVICE, O_RDWR | O_CLOEXEC);
     if (uhid_fd < 0) {
-        perror("open /dev/uhid");
+        fprintf(stderr, "UHID: open %s failed: %s\n",
+                UHID_DEVICE, strerror(errno));
         return -1;
     }
 
@@ -114,7 +127,8 @@ int uhid_open(const uint8_t *report_descriptor, size_t report_descriptor_len)
     event.u.create2.version = 1;
 
     if (write(uhid_fd, &event, sizeof(event)) != sizeof(event)) {
-        perror("UHID_CREATE2");
+        fprintf(stderr, "UHID_CREATE2: write failed: %s\n",
+                strerror(errno));
         close(uhid_fd);
         uhid_fd = -1;
         return -1;
@@ -144,18 +158,19 @@ int uhid_read_output(uint8_t *data, size_t data_size, size_t *data_len)
         if (n < 0) {
             if (errno == EINTR)
                 continue;
-            perror("UHID read");
+            fprintf(stderr, "UHID: read failed: errno=%d (%s)\n",
+                    errno, strerror(errno));
             return -1;
         }
 
         if (n == 0) {
-            fprintf(stderr, "UHID read: EOF\n");
+            fprintf(stderr, "UHID: read EOF\n");
             return -1;
         }
 
         if (n < (ssize_t)sizeof(event.type)) {
             fprintf(stderr,
-                    "UHID read: short event (%zd bytes)\n", n);
+                    "UHID: short event (%zd bytes)\n", n);
             return -1;
         }
 
@@ -199,15 +214,27 @@ int uhid_read_output(uint8_t *data, size_t data_size, size_t *data_len)
 
             memcpy(data, event.u.output.data, output_size);
             *data_len = output_size;
+            dump_bytes("UHID_OUTPUT: RX", data, output_size);
             return 0;
         }
 
         case UHID_GET_REPORT:
+            fprintf(stderr,
+                    "UHID: GET_REPORT id=%u rnum=%u rtype=%u\n",
+                    event.u.get_report.id,
+                    event.u.get_report.rnum,
+                    event.u.get_report.rtype);
             if (uhid_send_get_report_error(event.u.get_report.id) != 0)
                 return -1;
             break;
 
         case UHID_SET_REPORT:
+            fprintf(stderr,
+                    "UHID: SET_REPORT id=%u rnum=%u rtype=%u size=%u\n",
+                    event.u.set_report.id,
+                    event.u.set_report.rnum,
+                    event.u.set_report.rtype,
+                    event.u.set_report.size);
             if (uhid_send_set_report_error(event.u.set_report.id) != 0)
                 return -1;
             break;
@@ -257,7 +284,8 @@ int uhid_send_input(const uint8_t *data, size_t data_len)
     n = write(uhid_fd, &event, event_len);
 
     if (n < 0) {
-        perror("UHID_INPUT2");
+        fprintf(stderr, "UHID_INPUT2: write failed: %s\n",
+                strerror(errno));
         return -1;
     }
 
@@ -268,10 +296,7 @@ int uhid_send_input(const uint8_t *data, size_t data_len)
         return -1;
     }
 
-    fprintf(stderr,
-            "UHID: INPUT2 size=%zu\n",
-            data_len);
-
+    dump_bytes("UHID_INPUT2: TX", data, data_len);
     return 0;
 }
 
@@ -284,7 +309,9 @@ void uhid_close(void)
 
     memset(&event, 0, sizeof(event));
     event.type = UHID_DESTROY;
-    (void)write(uhid_fd, &event, sizeof(event.type));
+    if (write(uhid_fd, &event, sizeof(event.type)) < 0)
+        fprintf(stderr, "UHID_DESTROY: write failed: %s\n",
+                strerror(errno));
 
     close(uhid_fd);
     uhid_fd = -1;
