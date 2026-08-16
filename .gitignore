@@ -3,3 +3,13 @@
 /linux-webauthn
 /ctap-makecredential-test
 /webauthn-dbus-assertion-test
+
+# Debian package build artifacts
+/*.deb
+/*.changes
+/*.buildinfo
+debian/.debhelper/
+debian/debhelper-build-stamp
+debian/files
+debian/linux-webauthn/
+debian/linux-webauthn.debhelper.log
