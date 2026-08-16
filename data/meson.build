@@ -36,3 +36,8 @@ install_data(
   '70-linux-webauthn.rules',
   install_dir: get_option('prefix') / 'lib/udev/rules.d'
 )
+
+install_data(
+  'linux-webauthn.conf',
+  install_dir: '/usr/lib/modules-load.d'
+)
