@@ -1,3 +1,11 @@
+linux-webauthn (0.1-2) unstable; urgency=medium
+
+  * Make all production package files explicit in debian/install.
+  * Use standard debhelper integration for the user systemd service and udev rule.
+  * Add CI checks for executable, D-Bus service, user service, startup link, udev rule, and maintainer scripts.
+
+ -- GenXinvenits <14211793+GenXinvenits@users.noreply.github.com>  Sun, 16 Aug 2026 14:45:00 +0530
+
 linux-webauthn (0.1-1) unstable; urgency=medium
 
   * Initial Debian package for the Linux WebAuthn authenticator.
