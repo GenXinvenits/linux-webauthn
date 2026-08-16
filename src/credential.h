@@ -28,21 +28,9 @@ typedef struct {
     TpmCredential tpm;
 } WebAuthnCredential;
 
-/*
- * Initialize a credential structure.
- */
 void credential_init(WebAuthnCredential *credential);
-
-/*
- * Release all memory owned by a credential.
- */
 void credential_free(WebAuthnCredential *credential);
 
-/*
- * Create a new TPM-backed WebAuthn credential.
- *
- * The TPM key is generated inside the TPM.
- */
 int credential_create(
     TpmContext *tpm,
     WebAuthnCredential *credential,
@@ -52,35 +40,33 @@ int credential_create(
     const char *user_name,
     const char *display_name);
 
-/*
- * Save credential metadata and TPM blobs.
- */
 int credential_save(
     const WebAuthnCredential *credential,
     const char *base_directory);
 
-/*
- * Load a credential by credential ID.
- */
 int credential_load(
     WebAuthnCredential *credential,
     const char *base_directory,
     const uint8_t *credential_id,
     size_t credential_id_len);
 
-/*
- * Increment and return the signature counter.
- */
 uint32_t credential_next_sign_count(
     WebAuthnCredential *credential);
 
-/*
- * Find the credential directory name corresponding to an ID.
- */
 int credential_id_hex(
     const uint8_t *id,
     size_t id_len,
     char *hex,
     size_t hex_size);
+
+typedef int (*CredentialMatchCallback)(
+    const WebAuthnCredential *credential,
+    void *user_data);
+
+/* Enumerate valid persisted credentials. */
+int credential_enumerate(
+    const char *base_directory,
+    CredentialMatchCallback callback,
+    void *user_data);
 
 #endif
