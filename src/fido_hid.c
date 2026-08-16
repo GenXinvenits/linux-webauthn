@@ -86,6 +86,16 @@ static uint32_t get_be32(const uint8_t *p)
            p[3];
 }
 
+static void dump_report(const char *prefix, const uint8_t *report, size_t len)
+{
+    size_t dump_len = len > HID_REPORT_SIZE ? HID_REPORT_SIZE : len;
+
+    fprintf(stderr, "%s len=%zu", prefix, len);
+    for (size_t i = 0; i < dump_len; i++)
+        fprintf(stderr, " %02x", report[i]);
+    fprintf(stderr, "\n");
+}
+
 static uint32_t allocate_channel(void)
 {
     uint32_t cid = next_channel++;
@@ -103,7 +113,7 @@ static int send_packet(uint32_t cid, uint8_t cmd,
     size_t offset = 0;
     uint8_t seq = 0;
 
-    if (len > 0xffff)
+    if (len > 0xffff || (len != 0 && !data))
         return -1;
 
     while (offset < len || (offset == 0 && len == 0)) {
@@ -113,19 +123,23 @@ static int send_packet(uint32_t cid, uint8_t cmd,
         put_be32(report, cid);
 
         if (offset == 0) {
-            report[4] = cmd | FIDO_CMD_MASK;
+            report[4] = (uint8_t)(cmd | FIDO_CMD_MASK);
             put_be16(report + 5, (uint16_t)len);
             chunk = len > 57 ? 57 : len;
             if (chunk)
                 memcpy(report + 7, data, chunk);
         } else {
-            report[4] = seq++;
+            report[4] = (uint8_t)(seq++ & 0x7f);
             chunk = len - offset > 59 ? 59 : len - offset;
             memcpy(report + 5, data + offset, chunk);
         }
 
-        if (uhid_send_input(report, sizeof(report)) != 0)
+        dump_report("FIDO HID: TX", report, sizeof(report));
+
+        if (uhid_send_input(report, sizeof(report)) != 0) {
+            fprintf(stderr, "FIDO HID: UHID input failed: %s\n", strerror(errno));
             return -1;
+        }
 
         offset += chunk;
     }
@@ -135,6 +149,7 @@ static int send_packet(uint32_t cid, uint8_t cmd,
 
 static int send_error(uint32_t cid, uint8_t error)
 {
+    fprintf(stderr, "FIDO HID: ERROR cid=%08x code=%02x\n", cid, error);
     return send_packet(cid, CTAPHID_ERROR & 0x7f, &error, 1);
 }
 
@@ -143,17 +158,21 @@ static int handle_init(uint32_t cid, const uint8_t *data, size_t len)
     uint8_t response[17] = {0};
     uint32_t new_cid;
 
+    fprintf(stderr, "FIDO HID: INIT cid=%08x len=%zu\n", cid, len);
+
     if (len != 8)
         return send_error(cid, CTAPHID_ERR_INVALID_LEN);
 
     new_cid = allocate_channel();
     memcpy(response, data, 8);
     put_be32(response + 8, new_cid);
-    response[12] = 2; /* CTAPHID protocol version */
-    response[13] = 1; /* major */
-    response[14] = 0; /* minor */
-    response[15] = 0; /* build */
+    response[12] = 2;
+    response[13] = 1;
+    response[14] = 0;
+    response[15] = 0;
     response[16] = CTAPHID_CAPABILITY_CBOR | CTAPHID_CAPABILITY_WINK;
+
+    fprintf(stderr, "FIDO HID: INIT allocated cid=%08x\n", new_cid);
 
     return send_packet(cid, CTAPHID_INIT & 0x7f, response, sizeof(response));
 }
@@ -164,10 +183,11 @@ static int handle_cbor(uint32_t cid, const uint8_t *data, size_t len)
     size_t output_len = 0;
     int rc;
 
+    fprintf(stderr, "FIDO HID: CBOR cid=%08x len=%zu\n", cid, len);
+
     if (len == 0)
         return send_error(cid, CTAPHID_ERR_INVALID_LEN);
 
-    /* CTAPHID_CBOR payload starts with the CTAP2 command byte. */
     if (data[0] == CTAP_CMD_MAKE_CREDENTIAL ||
         data[0] == CTAP_CMD_GET_ASSERTION) {
         fprintf(stderr, "FIDO HID: fingerprint verification required\n");
@@ -182,10 +202,12 @@ static int handle_cbor(uint32_t cid, const uint8_t *data, size_t len)
     ctap_set_user_verified(0);
 
     if (rc != 0 || !output) {
+        fprintf(stderr, "FIDO HID: CTAP processing failed rc=%d\n", rc);
         free(output);
         return send_error(cid, CTAPHID_ERR_OTHER);
     }
 
+    fprintf(stderr, "FIDO HID: CBOR response len=%zu\n", output_len);
     rc = send_packet(cid, CTAPHID_CBOR & 0x7f, output, output_len);
     free(output);
     return rc;
@@ -194,6 +216,9 @@ static int handle_cbor(uint32_t cid, const uint8_t *data, size_t len)
 static int handle_message(uint32_t cid, uint8_t cmd,
                           const uint8_t *data, size_t len)
 {
+    fprintf(stderr, "FIDO HID: command cid=%08x cmd=%02x len=%zu\n",
+            cid, cmd | FIDO_CMD_MASK, len);
+
     switch (cmd | FIDO_CMD_MASK) {
     case CTAPHID_PING:
         return send_packet(cid, CTAPHID_PING & 0x7f, data, len);
@@ -229,50 +254,73 @@ static int receive_message(uint8_t *report, size_t report_len,
     uint8_t *payload;
     uint8_t seq = 0;
 
-    if (report_len < 7 || !cid_out || !cmd_out ||
+    if (!report || report_len < 7 || !cid_out || !cmd_out ||
         !payload_out || !payload_len_out)
         return -1;
+
+    dump_report("FIDO HID: RX", report, report_len);
 
     cid = get_be32(report);
     cmd = report[4];
 
-    if (!(cmd & FIDO_CMD_MASK))
+    if (!(cmd & FIDO_CMD_MASK)) {
+        fprintf(stderr, "FIDO HID: unexpected continuation packet as transaction start\n");
         return -1;
+    }
 
     expected = get_be16(report + 5);
-    if (expected > 65535)
-        return -1;
 
     payload = expected ? malloc(expected) : NULL;
     if (expected && !payload)
         return -1;
 
-    received = report_len > 7 ? report_len - 7 : 0;
+    received = report_len - 7;
     if (received > expected)
         received = expected;
+
     if (received)
         memcpy(payload, report + 7, received);
 
     while (received < expected) {
         uint8_t next[HID_REPORT_SIZE];
         size_t next_len = 0;
+        uint32_t next_cid;
+        uint8_t next_seq;
+        size_t chunk;
 
-        if (uhid_read_output(next, sizeof(next), &next_len) != 0 ||
-            next_len < 5 || get_be32(next) != cid ||
-            next[4] != seq++) {
+        if (uhid_read_output(next, sizeof(next), &next_len) != 0) {
+            fprintf(stderr, "FIDO HID: failed reading continuation packet\n");
             free(payload);
             return -1;
         }
 
-        size_t chunk = expected - received;
+        dump_report("FIDO HID: RX CONT", next, next_len);
+
+        if (next_len != HID_REPORT_SIZE) {
+            fprintf(stderr, "FIDO HID: invalid continuation report length=%zu\n", next_len);
+            free(payload);
+            return -1;
+        }
+
+        next_cid = get_be32(next);
+        next_seq = next[4];
+
+        if (next_cid != cid || (next_seq & FIDO_CMD_MASK) ||
+            next_seq != seq) {
+            fprintf(stderr,
+                    "FIDO HID: invalid continuation cid=%08x expected=%08x seq=%u expected=%u\n",
+                    next_cid, cid, next_seq, seq);
+            free(payload);
+            return -1;
+        }
+
+        chunk = expected - received;
         if (chunk > 59)
             chunk = 59;
-        if (next_len - 5 < chunk) {
-            free(payload);
-            return -1;
-        }
+
         memcpy(payload + received, next + 5, chunk);
         received += chunk;
+        seq++;
     }
 
     *cid_out = cid;
