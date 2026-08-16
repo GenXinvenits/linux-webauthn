@@ -93,13 +93,6 @@ int uhid_read_output(uint8_t *data, size_t data_size, size_t *data_len)
             *data_len = event.u.output.size;
             return 0;
 
-        case UHID_OUTPUT2:
-            if (event.u.output2.size > data_size)
-                return -1;
-            memcpy(data, event.u.output2.data, event.u.output2.size);
-            *data_len = event.u.output2.size;
-            return 0;
-
         case UHID_OPEN:
         case UHID_CLOSE:
         case UHID_START:
