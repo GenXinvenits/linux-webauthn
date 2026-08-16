@@ -2,12 +2,12 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Linux WebAuthn Test</title>
+<title>Linux WebAuthn Resident Credential Test</title>
 </head>
 <body>
-<h2>Linux WebAuthn — Browser + Server Test</h2>
-<button id="register">Register credential</button>
-<button id="authenticate">Authenticate</button>
+<h2>Linux WebAuthn — Resident Credential Test</h2>
+<button id="register">Register resident credential</button>
+<button id="authenticate">Authenticate with resident credential</button>
 <pre id="out">Ready.</pre>
 
 <script>
@@ -31,18 +31,6 @@ const USER = {
   name: "linux-webauthn-test",
   displayName: "Linux WebAuthn Test User"
 };
-const CREDENTIAL_KEY = "linux-webauthn-test-credential-id";
-let credentialId = null;
-
-function loadCredential() {
-  const stored = localStorage.getItem(CREDENTIAL_KEY);
-  credentialId = stored ? fromB64url(stored) : null;
-}
-
-function saveCredential(id) {
-  credentialId = new Uint8Array(id);
-  localStorage.setItem(CREDENTIAL_KEY, b64url(credentialId));
-}
 
 async function getJson(path) {
   const response = await fetch(path, { cache: "no-store" });
@@ -75,7 +63,11 @@ async function register() {
       user: USER,
       challenge,
       pubKeyCredParams: [{ type: "public-key", alg: -7 }],
-      authenticatorSelection: { userVerification: "required" },
+      authenticatorSelection: {
+        residentKey: "required",
+        requireResidentKey: true,
+        userVerification: "required"
+      },
       timeout: 60000,
       attestation: "none"
     }
@@ -87,8 +79,6 @@ async function register() {
   if (!publicKey)
     throw new Error("Browser did not expose the credential public key");
 
-  saveCredential(credential.rawId);
-
   const result = await postJson("/webauthn/register", {
     credentialId: b64url(credential.rawId),
     clientDataJSON: b64url(credential.response.clientDataJSON),
@@ -96,28 +86,27 @@ async function register() {
     publicKey: b64url(publicKey)
   });
 
-  out.textContent = "Browser registration + server verification succeeded.";
-  log("credential ID:", b64url(credentialId));
+  out.textContent = "Browser resident-credential registration + server verification succeeded.";
+  log("credential ID:", b64url(credential.rawId));
   log("authenticatorData bytes:", credential.response.getAuthenticatorData().byteLength);
   log("server:", result.message);
   log("counter:", result.counter);
 }
 
 async function authenticate() {
-  loadCredential();
-  if (!credentialId)
-    throw new Error("No stored credential. Register a credential first.");
-
   out.textContent = "Requesting authentication challenge from server...";
   const options = await getJson("/webauthn/authenticate-options");
   const challenge = fromB64url(options.challenge);
-  const serverCredentialId = fromB64url(options.credentialId);
 
+  /*
+   * Resident/discoverable credential test:
+   * deliberately omit allowCredentials. The browser must ask the
+   * authenticator for discoverable credentials for this RP.
+   */
   const assertion = await navigator.credentials.get({
     publicKey: {
       rpId: options.rpId,
       challenge,
-      allowCredentials: [{ type: "public-key", id: serverCredentialId }],
       userVerification: "required",
       timeout: 60000
     }
@@ -132,7 +121,7 @@ async function authenticate() {
     signature: b64url(assertion.response.signature)
   });
 
-  out.textContent = "Browser authentication + server verification succeeded.";
+  out.textContent = "Browser resident-credential authentication + server verification succeeded.";
   log("credential ID:", b64url(assertion.rawId));
   log("authenticatorData bytes:", assertion.response.authenticatorData.byteLength);
   log("signature bytes:", assertion.response.signature.byteLength);
