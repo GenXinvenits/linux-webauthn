@@ -26,11 +26,18 @@ const fromB64url = value => {
 };
 
 const RP = { id: "localhost", name: "Linux WebAuthn Test" };
-const USER = {
-  id: new TextEncoder().encode("linux-webauthn-test-user"),
-  name: "linux-webauthn-test",
-  displayName: "Linux WebAuthn Test User"
-};
+
+/* Generate a fresh WebAuthn user handle for every registration. */
+function makeUser() {
+  const id = new Uint8Array(16);
+  crypto.getRandomValues(id);
+  const suffix = b64url(id).slice(0, 8);
+  return {
+    id,
+    name: `linux-webauthn-${suffix}`,
+    displayName: `Linux WebAuthn Test User ${suffix}`
+  };
+}
 
 async function getJson(path) {
   const response = await fetch(path, { cache: "no-store" });
@@ -56,11 +63,12 @@ async function register() {
   out.textContent = "Requesting registration challenge from server...";
   const options = await getJson("/webauthn/register-options");
   const challenge = fromB64url(options.challenge);
+  const user = makeUser();
 
   const credential = await navigator.credentials.create({
     publicKey: {
       rp: { id: options.rpId, name: options.rpName },
-      user: USER,
+      user,
       challenge,
       pubKeyCredParams: [{ type: "public-key", alg: -7 }],
       authenticatorSelection: {
@@ -88,9 +96,12 @@ async function register() {
 
   out.textContent = "Browser resident-credential registration + server verification succeeded.";
   log("credential ID:", b64url(credential.rawId));
+  log("user:", user.name);
   log("authenticatorData bytes:", credential.response.getAuthenticatorData().byteLength);
   log("server:", result.message);
+  log("stored credentials:", result.storedCredentials);
   log("counter:", result.counter);
+  log("Tip: register again to create a second discoverable credential for the same RP.");
 }
 
 async function authenticate() {
@@ -98,11 +109,7 @@ async function authenticate() {
   const options = await getJson("/webauthn/authenticate-options");
   const challenge = fromB64url(options.challenge);
 
-  /*
-   * Resident/discoverable credential test:
-   * deliberately omit allowCredentials. The browser must ask the
-   * authenticator for discoverable credentials for this RP.
-   */
+  /* No allowCredentials: force discoverable-credential selection. */
   const assertion = await navigator.credentials.get({
     publicKey: {
       rpId: options.rpId,
