@@ -75,6 +75,7 @@ int authenticator_process(
     size_t *output_len)
 {
     int uv_status;
+    int rc;
 
     if (!initialized)
         return -1;
@@ -109,9 +110,17 @@ int authenticator_process(
         return 0;
     }
 
-    return ctap_process(
+    rc = ctap_process(
         input,
         input_len,
         output,
         output_len);
+
+    /*
+     * UV is strictly per-operation. Never allow a successful fingerprint
+     * verification to authorize a later CTAP request.
+     */
+    ctap_set_user_verified(0);
+
+    return rc;
 }
