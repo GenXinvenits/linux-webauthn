@@ -2,6 +2,7 @@ linux_webauthn_sources = files(
   'main.c',
   'authenticator.c',
   'credential.c',
+  'credential_store.c',
   'ctap.c',
   'ctap_uv.c',
   'cbor.c',
