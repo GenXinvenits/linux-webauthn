@@ -1,3 +1,10 @@
+linux-webauthn (0.1-3) unstable; urgency=medium
+
+  * Fix Debian staging by relying on Meson output for package files.
+  * Keep standard debhelper handling for the user service and udev rule.
+
+ -- GenXinvenits <14211793+GenXinvenits@users.noreply.github.com>  Sun, 16 Aug 2026 14:50:00 +0530
+
 linux-webauthn (0.1-2) unstable; urgency=medium
 
   * Make all production package files explicit in debian/install.
