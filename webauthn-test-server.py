@@ -13,7 +13,6 @@ HOST = "127.0.0.1"
 PORT = 8080
 ORIGIN = f"http://localhost:{PORT}"
 RP_ID = "localhost"
-ROOT = os.path.dirname(os.path.abspath(__file__))
 
 credential = None
 pending_register = None
@@ -32,16 +31,15 @@ def json_bytes(value):
     return json.dumps(value, separators=(",", ":"), ensure_ascii=False).encode()
 
 
-def fail(message, status=400):
+def fail(message):
     raise ValueError(message)
 
 
 def parse_client_data(raw):
     try:
-        obj = json.loads(raw.decode("utf-8"))
+        return json.loads(raw.decode("utf-8"))
     except Exception as exc:
         fail(f"invalid clientDataJSON: {exc}")
-    return obj
 
 
 def verify_client_data(raw, expected_type, expected_challenge):
@@ -52,7 +50,6 @@ def verify_client_data(raw, expected_type, expected_challenge):
         fail("clientData challenge mismatch")
     if data.get("origin") != ORIGIN:
         fail(f"clientData origin mismatch: {data.get('origin')!r}")
-    return data
 
 
 def verify_registration(body):
@@ -70,8 +67,7 @@ def verify_registration(body):
     if len(auth_data) < 37:
         fail("authenticatorData is too short")
 
-    expected_rp_hash = hashlib.sha256(RP_ID.encode()).digest()
-    if auth_data[:32] != expected_rp_hash:
+    if auth_data[:32] != hashlib.sha256(RP_ID.encode()).digest():
         fail("registration RP ID hash mismatch")
 
     flags = auth_data[32]
@@ -82,10 +78,12 @@ def verify_registration(body):
     if not (flags & 0x40):
         fail("registration AT flag missing")
 
-    credential["id"] = raw_id
-    credential["public_key"] = public_key_spki
-    credential["counter"] = int.from_bytes(auth_data[33:37], "big")
-    credential["flags"] = flags
+    credential = {
+        "id": raw_id,
+        "public_key": public_key_spki,
+        "counter": int.from_bytes(auth_data[33:37], "big"),
+        "flags": flags,
+    }
     pending_register = None
 
     return {
@@ -103,27 +101,20 @@ def verify_signature(public_key_spki, signature, signed_data):
         data_path = os.path.join(td, "signed-data.bin")
         pem_path = os.path.join(td, "public.pem")
 
-        with open(key_path, "wb") as f:
-            f.write(public_key_spki)
-        with open(sig_path, "wb") as f:
-            f.write(signature)
-        with open(data_path, "wb") as f:
-            f.write(signed_data)
+        open(key_path, "wb").write(public_key_spki)
+        open(sig_path, "wb").write(signature)
+        open(data_path, "wb").write(signed_data)
 
         r = subprocess.run(
             ["openssl", "pkey", "-pubin", "-inform", "DER", "-in", key_path,
-             "-out", pem_path],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        )
+             "-out", pem_path], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         if r.returncode != 0:
             fail("stored public key is invalid")
 
         r = subprocess.run(
             ["openssl", "dgst", "-sha256", "-verify", pem_path,
              "-signature", sig_path, data_path],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            text=True,
-        )
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         if r.returncode != 0 or r.stdout.strip() != "Verified OK":
             fail("WebAuthn signature verification failed")
 
@@ -146,9 +137,7 @@ def verify_authentication(body):
         fail("credential ID mismatch")
     if len(auth_data) < 37:
         fail("authenticatorData is too short")
-
-    expected_rp_hash = hashlib.sha256(RP_ID.encode()).digest()
-    if auth_data[:32] != expected_rp_hash:
+    if auth_data[:32] != hashlib.sha256(RP_ID.encode()).digest():
         fail("authentication RP ID hash mismatch")
 
     flags = auth_data[32]
@@ -162,8 +151,7 @@ def verify_authentication(body):
     if old_counter != 0 and counter <= old_counter:
         fail(f"signature counter did not increase: {old_counter} -> {counter}")
 
-    client_data_hash = hashlib.sha256(client_data).digest()
-    signed_data = auth_data + client_data_hash
+    signed_data = auth_data + hashlib.sha256(client_data).digest()
     verify_signature(credential["public_key"], signature, signed_data)
 
     credential["counter"] = counter
@@ -192,7 +180,6 @@ class Handler(SimpleHTTPRequestHandler):
         self.wfile.write(payload)
 
     def do_POST(self):
-        global credential, pending_register, pending_authenticate
         length = int(self.headers.get("Content-Length", "0"))
         try:
             body = json.loads(self.rfile.read(length))
@@ -215,14 +202,16 @@ class Handler(SimpleHTTPRequestHandler):
         path = urlparse(self.path).path
         if path == "/webauthn/register-options":
             pending_register = os.urandom(32)
-            self._json(200, {"challenge": b64u(pending_register), "rpId": RP_ID, "rpName": "Linux WebAuthn Test"})
+            self._json(200, {"challenge": b64u(pending_register), "rpId": RP_ID,
+                             "rpName": "Linux WebAuthn Test"})
             return
         if path == "/webauthn/authenticate-options":
             if credential is None:
                 self._json(400, {"error": "register a credential first"})
                 return
             pending_authenticate = os.urandom(32)
-            self._json(200, {"challenge": b64u(pending_authenticate), "rpId": RP_ID, "credentialId": b64u(credential["id"])})
+            self._json(200, {"challenge": b64u(pending_authenticate), "rpId": RP_ID,
+                             "credentialId": b64u(credential["id"])})
             return
         super().do_GET()
 
