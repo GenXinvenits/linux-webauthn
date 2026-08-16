@@ -9,7 +9,7 @@
 
 static int initialized = 0;
 static GThread *fido_hid_thread = NULL;
-static GMutex process_mutex = G_MUTEX_INIT;
+static GMutex process_mutex;
 
 static gpointer fido_hid_thread_main(gpointer user_data)
 {
@@ -30,6 +30,8 @@ int authenticator_init(void)
         stderr,
         "LINUX WebAuthn: initializing authenticator\n");
 
+    g_mutex_init(&process_mutex);
+
     ctap_init();
 
     fido_hid_thread = g_thread_new(
@@ -40,6 +42,7 @@ int authenticator_init(void)
     if (!fido_hid_thread) {
         fprintf(stderr, "LINUX WebAuthn: failed to start FIDO HID thread\n");
         ctap_cleanup();
+        g_mutex_clear(&process_mutex);
         return -1;
     }
 
@@ -65,6 +68,7 @@ void authenticator_cleanup(void)
     }
 
     ctap_cleanup();
+    g_mutex_clear(&process_mutex);
 
     initialized = 0;
 }
