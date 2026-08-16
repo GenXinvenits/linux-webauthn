@@ -20,81 +20,48 @@
 #define CTAP_CMD_GET_ASSERTION   0x02
 #define CTAP2_OK                 0x00
 
-static void print_hex(
-    const char *name,
-    const uint8_t *data,
-    size_t length)
+static void print_hex(const char *name, const uint8_t *data, size_t length)
 {
     printf("%s: ", name);
-
     for (size_t i = 0; i < length; i++)
         printf("%02x", data[i]);
-
     printf("\n");
 }
 
-static CborValue *find_map_negative_key(
-    CborValue *map,
-    int64_t key)
+static CborValue *find_map_negative_key(CborValue *map, int64_t key)
 {
-    if (!map ||
-        !cbor_is_type(map, CBOR_TYPE_MAP))
+    if (!map || !cbor_is_type(map, CBOR_TYPE_MAP))
         return NULL;
 
     for (size_t i = 0; i < map->map.count; i++) {
         CborValue *k = map->map.keys[i];
-
-        if (k &&
-            cbor_is_type(k, CBOR_TYPE_NEGATIVE) &&
-            k->int_value == key)
+        if (k && cbor_is_type(k, CBOR_TYPE_NEGATIVE) && k->int_value == key)
             return map->map.values[i];
     }
-
     return NULL;
 }
 
-static int dbus_process(
-    GDBusConnection *bus,
-    const uint8_t *input,
-    size_t input_len,
-    uint8_t **output,
-    size_t *output_len)
+static int dbus_process(GDBusConnection *bus, const uint8_t *input,
+                        size_t input_len, uint8_t **output, size_t *output_len)
 {
     GError *error = NULL;
     GVariant *reply = NULL;
     GVariant *bytes = NULL;
 
-    if (!bus ||
-        !input ||
-        input_len == 0 ||
-        !output ||
-        !output_len)
+    if (!bus || !input || input_len == 0 || !output || !output_len)
         return -1;
 
     *output = NULL;
     *output_len = 0;
 
     reply = g_dbus_connection_call_sync(
-        bus,
-        BUS_NAME,
-        OBJECT_PATH,
-        INTERFACE,
-        METHOD,
-        g_variant_new("(@ay)",
-            g_variant_new_fixed_array(
-                G_VARIANT_TYPE_BYTE,
-                input,
-                input_len,
-                sizeof(uint8_t))),
-        G_VARIANT_TYPE("(ay)"),
-        G_DBUS_CALL_FLAGS_NONE,
-        -1,
-        NULL,
-        &error);
+        bus, BUS_NAME, OBJECT_PATH, INTERFACE, METHOD,
+        g_variant_new("(@ay)", g_variant_new_fixed_array(
+            G_VARIANT_TYPE_BYTE, input, input_len, sizeof(uint8_t))),
+        G_VARIANT_TYPE("(ay)"), G_DBUS_CALL_FLAGS_NONE, -1, NULL, &error);
 
     if (!reply) {
-        fprintf(stderr,
-                "D-Bus Process() failed: %s\n",
+        fprintf(stderr, "D-Bus Process() failed: %s\n",
                 error ? error->message : "unknown error");
         g_clear_error(&error);
         return -1;
@@ -103,9 +70,7 @@ static int dbus_process(
     g_variant_get(reply, "(@ay)", &bytes);
 
     gsize n = 0;
-    const guint8 *data = g_variant_get_fixed_array(
-        bytes, &n, sizeof(guint8));
-
+    const guint8 *data = g_variant_get_fixed_array(bytes, &n, sizeof(guint8));
     if (!data || n == 0) {
         fprintf(stderr, "D-Bus returned empty response\n");
         g_variant_unref(bytes);
@@ -122,60 +87,51 @@ static int dbus_process(
 
     memcpy(*output, data, n);
     *output_len = n;
-
     g_variant_unref(bytes);
     g_variant_unref(reply);
     return 0;
 }
 
-static int decode_response(
-    const uint8_t *output,
-    size_t output_len,
-    CborValue **response)
+static int decode_response(const uint8_t *output, size_t output_len,
+                           CborValue **response)
 {
     size_t offset = 0;
 
     if (!output || output_len < 2 || !response)
         return -1;
-
     *response = NULL;
 
     if (output[0] != CTAP2_OK)
         return -1;
-
     if (cbor_decode(output + 1, output_len - 1, &offset, response) != 0)
         return -1;
 
-    if (!*response ||
-        !cbor_is_type(*response, CBOR_TYPE_MAP) ||
+    if (!*response || !cbor_is_type(*response, CBOR_TYPE_MAP) ||
         offset != output_len - 1) {
         cbor_free(*response);
         *response = NULL;
         return -1;
     }
-
     return 0;
 }
 
-static int extract_credential_data(
-    CborValue *auth_data,
-    uint8_t **credential_id,
-    size_t *credential_id_len,
-    CborValue **cose_key)
+static int extract_credential_data(CborValue *auth_data,
+                                   uint8_t **credential_id,
+                                   size_t *credential_id_len,
+                                   CborValue **cose_key)
 {
     const uint8_t *data;
     size_t length;
     size_t offset;
     uint16_t id_len;
 
-    if (!auth_data || !credential_id || !credential_id_len ||
-        !cose_key || !cbor_is_type(auth_data, CBOR_TYPE_BYTES))
+    if (!auth_data || !credential_id || !credential_id_len || !cose_key ||
+        !cbor_is_type(auth_data, CBOR_TYPE_BYTES))
         return -1;
 
     *credential_id = NULL;
     *credential_id_len = 0;
     *cose_key = NULL;
-
     data = auth_data->bytes.data;
     length = auth_data->bytes.length;
 
@@ -185,14 +141,12 @@ static int extract_credential_data(
     offset = 32 + 1 + 4 + 16;
     id_len = ((uint16_t)data[offset] << 8) | data[offset + 1];
     offset += 2;
-
     if (id_len == 0 || offset + id_len > length)
         return -1;
 
     *credential_id = malloc(id_len);
     if (!*credential_id)
         return -1;
-
     memcpy(*credential_id, data + offset, id_len);
     *credential_id_len = id_len;
     offset += id_len;
@@ -214,28 +168,21 @@ static int extract_credential_data(
         *cose_key = NULL;
         return -1;
     }
-
     return 0;
 }
 
-static int verify_es256_signature(
-    CborValue *cose_key,
-    const uint8_t digest[SHA256_DIGEST_LENGTH],
-    const uint8_t *signature,
-    size_t signature_len)
+static int verify_es256_signature(CborValue *cose_key,
+                                  const uint8_t digest[SHA256_DIGEST_LENGTH],
+                                  const uint8_t *signature,
+                                  size_t signature_len)
 {
-    CborValue *kty;
-    CborValue *alg;
-    CborValue *crv;
-    CborValue *x;
-    CborValue *y;
+    CborValue *kty, *alg, *crv, *x, *y;
     EVP_PKEY *pkey = NULL;
     EVP_PKEY_CTX *ctx = NULL;
     EC_KEY *ec_key = NULL;
     EC_POINT *point = NULL;
     const EC_GROUP *group = NULL;
-    BIGNUM *bx = NULL;
-    BIGNUM *by = NULL;
+    BIGNUM *bx = NULL, *by = NULL;
     int result = -1;
 
     if (!cose_key || !digest || !signature || signature_len == 0 ||
@@ -261,16 +208,13 @@ static int verify_es256_signature(
         goto cleanup;
 
     printf("    Public key: ES256 / P-256\n");
-
     ec_key = EC_KEY_new_by_curve_name(NID_X9_62_prime256v1);
     if (!ec_key)
         goto cleanup;
-
     group = EC_KEY_get0_group(ec_key);
     point = EC_POINT_new(group);
     bx = BN_bin2bn(x->bytes.data, x->bytes.length, NULL);
     by = BN_bin2bn(y->bytes.data, y->bytes.length, NULL);
-
     if (!point || !bx || !by)
         goto cleanup;
     if (EC_POINT_set_affine_coordinates(group, point, bx, by, NULL) != 1)
@@ -279,16 +223,12 @@ static int verify_es256_signature(
         goto cleanup;
 
     pkey = EVP_PKEY_new();
-    if (!pkey)
-        goto cleanup;
-    if (EVP_PKEY_assign_EC_KEY(pkey, ec_key) != 1)
+    if (!pkey || EVP_PKEY_assign_EC_KEY(pkey, ec_key) != 1)
         goto cleanup;
     ec_key = NULL;
 
     ctx = EVP_PKEY_CTX_new(pkey, NULL);
-    if (!ctx)
-        goto cleanup;
-    if (EVP_PKEY_verify_init(ctx) <= 0)
+    if (!ctx || EVP_PKEY_verify_init(ctx) <= 0)
         goto cleanup;
     if (EVP_PKEY_verify(ctx, signature, signature_len,
                         digest, SHA256_DIGEST_LENGTH) == 1)
@@ -304,17 +244,12 @@ cleanup:
     return result;
 }
 
-static int build_makecredential_request(
-    uint8_t **input,
-    size_t *input_len,
-    uint8_t client_data_hash[32])
+static int build_makecredential_request(uint8_t **input, size_t *input_len,
+                                        uint8_t client_data_hash[32])
 {
-    CborValue *request = NULL;
-    CborValue *rp = NULL;
-    CborValue *user = NULL;
-    CborValue *params = NULL;
-    CborValue *param = NULL;
-    uint8_t user_id[] = {0x01,0x02,0x03,0x04,0x05,0x06,0x07,0x08};
+    CborValue *request = NULL, *rp = NULL, *user = NULL;
+    CborValue *params = NULL, *param = NULL;
+    uint8_t user_id[] = {1,2,3,4,5,6,7,8};
     uint8_t *encoded = NULL;
     size_t encoded_len = 0;
 
@@ -348,7 +283,6 @@ static int build_makecredential_request(
 
     if (cbor_encode(request, &encoded, &encoded_len) != 0)
         goto fail;
-
     *input = malloc(encoded_len + 1);
     if (!*input)
         goto fail;
@@ -357,33 +291,22 @@ static int build_makecredential_request(
     *input_len = encoded_len + 1;
 
     free(encoded);
-    cbor_free(request);
-    cbor_free(rp);
-    cbor_free(user);
-    cbor_free(params);
-    cbor_free(param);
+    cbor_free(request); cbor_free(rp); cbor_free(user);
+    cbor_free(params); cbor_free(param);
     return 0;
-
 fail:
     free(encoded);
-    cbor_free(request);
-    cbor_free(rp);
-    cbor_free(user);
-    cbor_free(params);
-    cbor_free(param);
+    cbor_free(request); cbor_free(rp); cbor_free(user);
+    cbor_free(params); cbor_free(param);
     return -1;
 }
 
-static int build_getassertion_request(
-    const uint8_t client_data_hash[32],
-    const uint8_t *credential_id,
-    size_t credential_id_len,
-    uint8_t **input,
-    size_t *input_len)
+static int build_getassertion_request(const uint8_t client_data_hash[32],
+                                      const uint8_t *credential_id,
+                                      size_t credential_id_len,
+                                      uint8_t **input, size_t *input_len)
 {
-    CborValue *request = NULL;
-    CborValue *allow = NULL;
-    CborValue *entry = NULL;
+    CborValue *request = NULL, *allow = NULL, *entry = NULL;
     uint8_t *encoded = NULL;
     size_t encoded_len = 0;
 
@@ -404,7 +327,6 @@ static int build_getassertion_request(
 
     if (cbor_encode(request, &encoded, &encoded_len) != 0)
         goto fail;
-
     *input = malloc(encoded_len + 1);
     if (!*input)
         goto fail;
@@ -413,33 +335,72 @@ static int build_getassertion_request(
     *input_len = encoded_len + 1;
 
     free(encoded);
-    cbor_free(request);
-    cbor_free(allow);
-    cbor_free(entry);
+    cbor_free(request); cbor_free(allow); cbor_free(entry);
     return 0;
-
 fail:
     free(encoded);
-    cbor_free(request);
-    cbor_free(allow);
-    cbor_free(entry);
+    cbor_free(request); cbor_free(allow); cbor_free(entry);
     return -1;
+}
+
+static uint32_t auth_data_counter(const CborValue *auth_data)
+{
+    const uint8_t *p = auth_data->bytes.data + 33;
+    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) |
+           ((uint32_t)p[2] << 8) | p[3];
+}
+
+static int verify_rp_id_hash(const CborValue *auth_data)
+{
+    static const char rp_id[] = "example.com";
+    uint8_t expected[SHA256_DIGEST_LENGTH];
+
+    if (!auth_data || !cbor_is_type(auth_data, CBOR_TYPE_BYTES) ||
+        auth_data->bytes.length < 37)
+        return -1;
+
+    SHA256((const unsigned char *)rp_id, strlen(rp_id), expected);
+    return memcmp(auth_data->bytes.data, expected, sizeof(expected)) == 0 ? 0 : -1;
+}
+
+static int verify_assertion_signature(const CborValue *auth_data,
+                                      const uint8_t client_data_hash[32],
+                                      const CborValue *signature,
+                                      CborValue *cose_key)
+{
+    SHA256_CTX sha;
+    uint8_t digest[SHA256_DIGEST_LENGTH];
+
+    if (!auth_data || !signature || !cose_key ||
+        !cbor_is_type(auth_data, CBOR_TYPE_BYTES) ||
+        !cbor_is_type(signature, CBOR_TYPE_BYTES))
+        return -1;
+
+    if (SHA256_Init(&sha) != 1)
+        return -1;
+    if (SHA256_Update(&sha, auth_data->bytes.data, auth_data->bytes.length) != 1)
+        return -1;
+    if (SHA256_Update(&sha, client_data_hash, 32) != 1)
+        return -1;
+    if (SHA256_Final(digest, &sha) != 1)
+        return -1;
+
+    return verify_es256_signature(cose_key, digest,
+                                  signature->bytes.data,
+                                  signature->bytes.length);
 }
 
 int main(void)
 {
     GError *error = NULL;
     GDBusConnection *bus = NULL;
-    uint8_t *input = NULL;
-    size_t input_len = 0;
-    uint8_t *output = NULL;
-    size_t output_len = 0;
+    uint8_t *input = NULL, *output = NULL;
+    size_t input_len = 0, output_len = 0;
     uint8_t client_data_hash[32];
-    CborValue *response = NULL;
-    CborValue *auth_data = NULL;
-    CborValue *cose_key = NULL;
+    CborValue *response = NULL, *auth_data = NULL, *cose_key = NULL;
     uint8_t *credential_id = NULL;
     size_t credential_id_len = 0;
+    uint32_t make_counter = 0, assertion_counter = 0;
     int result = 1;
 
     bus = g_bus_get_sync(G_BUS_TYPE_SESSION, NULL, &error);
@@ -458,7 +419,6 @@ int main(void)
     printf("Sending makeCredential request...\n");
     if (dbus_process(bus, input, input_len, &output, &output_len) != 0)
         goto cleanup;
-
     if (decode_response(output, output_len, &response) != 0) {
         fprintf(stderr, "makeCredential failed: CTAP status 0x%02x\n",
                 output_len ? output[0] : 0xff);
@@ -470,21 +430,21 @@ int main(void)
         fprintf(stderr, "makeCredential response has no authData\n");
         goto cleanup;
     }
-
     if (auth_data->bytes.length < 37) {
         fprintf(stderr, "authData too short\n");
         goto cleanup;
     }
 
     print_hex("makeCredential authData flags", auth_data->bytes.data + 32, 1);
-    if (!(auth_data->bytes.data[32] & 0x01)) {
-        fprintf(stderr, "FAIL: UP flag is not set\n");
+    if (!(auth_data->bytes.data[32] & 0x01) || !(auth_data->bytes.data[32] & 0x04)) {
+        fprintf(stderr, "FAIL: makeCredential UP/UV flags are not set\n");
         goto cleanup;
     }
-    if (!(auth_data->bytes.data[32] & 0x04)) {
-        fprintf(stderr, "FAIL: UV flag is not set\n");
+    if (verify_rp_id_hash(auth_data) != 0) {
+        fprintf(stderr, "FAIL: makeCredential RP ID hash mismatch\n");
         goto cleanup;
     }
+    make_counter = auth_data_counter(auth_data);
 
     if (extract_credential_data(auth_data, &credential_id,
                                 &credential_id_len, &cose_key) != 0) {
@@ -495,12 +455,9 @@ int main(void)
     printf("makeCredential succeeded with UV\n");
     print_hex("credential ID", credential_id, credential_id_len);
 
-    cbor_free(response);
-    response = NULL;
-    free(output);
-    output = NULL;
-    free(input);
-    input = NULL;
+    cbor_free(response); response = NULL;
+    free(output); output = NULL;
+    free(input); input = NULL;
     input_len = 0;
 
     if (build_getassertion_request(client_data_hash, credential_id,
@@ -512,7 +469,6 @@ int main(void)
     printf("Sending getAssertion request...\n");
     if (dbus_process(bus, input, input_len, &output, &output_len) != 0)
         goto cleanup;
-
     if (decode_response(output, output_len, &response) != 0) {
         fprintf(stderr, "getAssertion failed: CTAP status 0x%02x\n",
                 output_len ? output[0] : 0xff);
@@ -520,9 +476,17 @@ int main(void)
     }
 
     auth_data = cbor_map_get_uint(response, 2);
+    CborValue *signature = cbor_map_get_uint(response, 3);
+    CborValue *returned_credential = cbor_map_get_uint(response, 1);
+
     if (!auth_data || !cbor_is_type(auth_data, CBOR_TYPE_BYTES) ||
         auth_data->bytes.length < 37) {
         fprintf(stderr, "getAssertion response has invalid authData\n");
+        goto cleanup;
+    }
+    if (!signature || !cbor_is_type(signature, CBOR_TYPE_BYTES) ||
+        signature->bytes.length == 0) {
+        fprintf(stderr, "getAssertion response has no signature\n");
         goto cleanup;
     }
 
@@ -535,8 +499,48 @@ int main(void)
         fprintf(stderr, "FAIL: getAssertion UV flag is not set\n");
         goto cleanup;
     }
+    if (verify_rp_id_hash(auth_data) != 0) {
+        fprintf(stderr, "FAIL: getAssertion RP ID hash mismatch\n");
+        goto cleanup;
+    }
+
+    assertion_counter = auth_data_counter(auth_data);
+    if (assertion_counter <= make_counter) {
+        fprintf(stderr, "FAIL: signature counter did not advance (%u -> %u)\n",
+                make_counter, assertion_counter);
+        goto cleanup;
+    }
+
+    if (returned_credential) {
+        if (!cbor_is_type(returned_credential, CBOR_TYPE_MAP)) {
+            fprintf(stderr, "FAIL: returned credential has invalid type\n");
+            goto cleanup;
+        }
+        CborValue *returned_id = cbor_map_get_text(returned_credential, "id");
+        if (!returned_id || !cbor_is_type(returned_id, CBOR_TYPE_BYTES) ||
+            returned_id->bytes.length != credential_id_len ||
+            memcmp(returned_id->bytes.data, credential_id, credential_id_len) != 0) {
+            fprintf(stderr, "FAIL: returned credential ID mismatch\n");
+            goto cleanup;
+        }
+    }
 
     printf("getAssertion succeeded with UV\n");
+    printf("\n=== WebAuthn assertion verification ===\n");
+    printf("RP ID hash: PASS\n");
+    printf("UP flag:    PASS\n");
+    printf("UV flag:    PASS\n");
+    printf("Counter:    PASS (%u -> %u)\n", make_counter, assertion_counter);
+
+    if (verify_assertion_signature(auth_data, client_data_hash,
+                                   signature, cose_key) != 0) {
+        fprintf(stderr, "FAIL: ES256 assertion signature verification failed\n");
+        goto cleanup;
+    }
+
+    printf("Signature:  PASS\n");
+    printf("Credential: PASS\n");
+    printf("\nWebAuthn assertion cryptographically verified\n");
     result = 0;
 
 cleanup:
