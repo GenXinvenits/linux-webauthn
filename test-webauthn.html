@@ -19,6 +19,11 @@ const b64url = bytes => {
   for (const b of bytes) s += String.fromCharCode(b);
   return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 };
+const fromB64url = value => {
+  const padded = value.replace(/-/g, "+").replace(/_/g, "/") + "===";
+  const s = atob(padded.slice(0, padded.length - (padded.length % 4)));
+  return Uint8Array.from(s, c => c.charCodeAt(0));
+};
 
 const RP = { id: "localhost", name: "Linux WebAuthn Test" };
 const USER = {
@@ -27,7 +32,20 @@ const USER = {
   displayName: "Linux WebAuthn Test User"
 };
 
+const CREDENTIAL_KEY = "linux-webauthn-test-credential-id";
 let credentialId = null;
+
+function loadCredential() {
+  const stored = localStorage.getItem(CREDENTIAL_KEY);
+  if (stored) credentialId = fromB64url(stored);
+}
+
+function saveCredential(id) {
+  credentialId = new Uint8Array(id);
+  localStorage.setItem(CREDENTIAL_KEY, b64url(credentialId));
+}
+
+loadCredential();
 
 async function register() {
   out.textContent = "Starting browser registration...";
@@ -50,7 +68,7 @@ async function register() {
 
   if (!credential) throw new Error("No credential returned");
 
-  credentialId = new Uint8Array(credential.rawId);
+  saveCredential(credential.rawId);
   out.textContent = "Browser registration succeeded.";
   log("credential ID:", b64url(credentialId));
   log("type:", credential.type);
@@ -58,8 +76,10 @@ async function register() {
 }
 
 async function authenticate() {
+  loadCredential();
+
   if (!credentialId)
-    throw new Error("Register a credential first in this page");
+    throw new Error("No stored credential. Register a credential first.");
 
   out.textContent = "Starting browser authentication...";
 
