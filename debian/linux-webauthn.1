@@ -1,0 +1,20 @@
+.TH LINUX-WEBAUTHN 1 "August 2026" "linux-webauthn 0.1" "User Commands"
+.SH NAME
+linux-webauthn \- Linux-native WebAuthn/FIDO2 authenticator bridge
+.SH SYNOPSIS
+.B linux-webauthn
+.SH DESCRIPTION
+.B linux-webauthn
+runs the Linux WebAuthn authenticator as a user-session service. It exposes
+an org.linux.WebAuthn D-Bus interface and a virtual FIDO HID authenticator.
+Fingerprint user verification and TPM-backed credential handling are
+performed by the existing Linux authentication stack.
+.PP
+The packaged service is intended to run as the logged-in user and does not
+require the authenticator daemon to run as root.
+.SH SEE ALSO
+.BR systemctl (1),
+.BR busctl (1),
+.BR fprintd (1)
+.SH AUTHOR
+GenXinvenits
