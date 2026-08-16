@@ -1,6 +1,7 @@
 #include "fido_hid.h"
 
 #include "authenticator.h"
+#include "cbor.h"
 #include "ctap.h"
 #include "fingerprint.h"
 #include "uhid.h"
@@ -177,25 +178,89 @@ static int handle_init(uint32_t cid, const uint8_t *data, size_t len)
     return send_packet(cid, CTAPHID_INIT & 0x7f, response, sizeof(response));
 }
 
+/*
+ * Return whether the CTAP request explicitly asks for built-in
+ * user verification.  The CTAP command byte is part of data.
+ *
+ * MakeCredential: options = parameter 0x07
+ * GetAssertion:   options = parameter 0x05
+ *
+ * The authenticator advertises UV support through authenticatorGetInfo,
+ * so the client is expected to translate WebAuthn userVerification
+ * requirements into this CTAP option when UV is needed.
+ */
+static int request_requires_uv(const uint8_t *data, size_t len)
+{
+    CborValue *request_map = NULL;
+    CborValue *options = NULL;
+    CborValue *uv = NULL;
+    size_t offset = 0;
+    uint8_t command;
+    uint64_t options_key;
+    int result = 0;
+
+    if (!data || len < 2)
+        return 0;
+
+    command = data[0];
+
+    if (command == CTAP_CMD_MAKE_CREDENTIAL)
+        options_key = 0x07;
+    else if (command == CTAP_CMD_GET_ASSERTION)
+        options_key = 0x05;
+    else
+        return 0;
+
+    if (cbor_decode(data + 1, len - 1, &offset, &request_map) != 0 ||
+        offset != len - 1 ||
+        !request_map ||
+        !cbor_is_type(request_map, CBOR_TYPE_MAP)) {
+        cbor_free(request_map);
+        return 0;
+    }
+
+    options = cbor_map_get_uint(request_map, options_key);
+
+    if (options && cbor_is_type(options, CBOR_TYPE_MAP))
+        uv = cbor_map_get_text(options, "uv");
+
+    if (uv && cbor_is_type(uv, CBOR_TYPE_BOOL))
+        result = uv->boolean ? 1 : 0;
+
+    cbor_free(request_map);
+    return result;
+}
+
 static int handle_cbor(uint32_t cid, const uint8_t *data, size_t len)
 {
     uint8_t *output = NULL;
     size_t output_len = 0;
     int rc;
+    int requires_uv;
 
     fprintf(stderr, "FIDO HID: CBOR cid=%08x len=%zu\n", cid, len);
 
     if (len == 0)
         return send_error(cid, CTAPHID_ERR_INVALID_LEN);
 
-    if (data[0] == CTAP_CMD_MAKE_CREDENTIAL ||
-        data[0] == CTAP_CMD_GET_ASSERTION) {
-        fprintf(stderr, "FIDO HID: fingerprint verification required\n");
+    requires_uv = request_requires_uv(data, len);
+
+    if (requires_uv) {
+        fprintf(stderr, "FIDO HID: CTAP requested user verification\n");
+
         if (fingerprint_verify() != 0) {
+            uint8_t response = CTAP2_ERR_USER_ACTION_TIMEOUT;
+
             ctap_set_user_verified(0);
-            return send_error(cid, CTAPHID_ERR_OTHER);
+
+            fprintf(stderr, "FIDO HID: fingerprint verification failed\n");
+            return send_packet(cid, CTAPHID_CBOR & 0x7f, &response, 1);
         }
+
+        fprintf(stderr, "FIDO HID: fingerprint verification SUCCESS\n");
         ctap_set_user_verified(1);
+    } else {
+        ctap_set_user_verified(0);
     }
 
     rc = authenticator_process(data, len, &output, &output_len);
