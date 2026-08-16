@@ -5,9 +5,10 @@ linux_webauthn_sources = files(
   'ctap.c',
   'cbor.c',
   'fingerprint.c',
-  'tpm.c'
+  'tpm.c',
+  'uhid.c',
+  'fido_hid.c'
 )
-
 
 executable(
   'linux-webauthn',
