@@ -1,6 +1,7 @@
 #include "fingerprint.h"
 #include "authenticator.h"
 #include "ctap.h"
+#include "fido_hid.h"
 
 #include <gio/gio.h>
 #include <glib.h>
@@ -15,6 +16,7 @@
 
 static GMainLoop *main_loop = NULL;
 static guint registration_id = 0;
+static GThread *fido_hid_thread = NULL;
 
 static const gchar introspection_xml[] =
     "<node>"
@@ -43,6 +45,27 @@ static const gchar introspection_xml[] =
     "</node>";
 
 static GDBusNodeInfo *introspection_data = NULL;
+
+static gpointer fido_hid_thread_func(gpointer user_data)
+{
+    int rc;
+
+    (void)user_data;
+
+    rc = fido_hid_run();
+
+    if (rc != 0) {
+        fprintf(
+            stderr,
+            "LINUX WebAuthn: FIDO HID transport stopped with an error\n");
+    } else {
+        fprintf(
+            stderr,
+            "LINUX WebAuthn: FIDO HID transport stopped\n");
+    }
+
+    return NULL;
+}
 
 static GVariant *bytes_to_variant(
     const uint8_t *data,
@@ -108,13 +131,6 @@ static int variant_to_bytes(
 
 static int require_fingerprint(void)
 {
-    /*
-     * fingerprint_verify() owns all user-facing fingerprint
-     * messages and performs the actual verification.
-     *
-     * This function only translates the verification result
-     * into the CTAP user-verification state.
-     */
     if (fingerprint_verify() != 0) {
         ctap_set_user_verified(0);
         return -1;
@@ -137,10 +153,8 @@ static void method_call(
 {
     uint8_t *input = NULL;
     size_t input_len = 0;
-
     uint8_t *output = NULL;
     size_t output_len = 0;
-
     int rc;
 
     (void)connection;
@@ -149,48 +163,23 @@ static void method_call(
     (void)interface_name;
     (void)user_data;
 
-    /*
-     * ------------------------------------------------------------
-     * Generic CTAP Process
-     * ------------------------------------------------------------
-     */
-
     if (strcmp(method_name, "Process") == 0) {
-
         GVariant *input_variant = NULL;
 
-        g_variant_get(
-            parameters,
-            "(@ay)",
-            &input_variant);
+        g_variant_get(parameters, "(@ay)", &input_variant);
 
-        if (variant_to_bytes(
-                input_variant,
-                &input,
-                &input_len) != 0) {
-
+        if (variant_to_bytes(input_variant, &input, &input_len) != 0) {
             g_variant_unref(input_variant);
-
             g_dbus_method_invocation_return_error(
                 invocation,
                 G_IO_ERROR,
                 G_IO_ERROR_INVALID_ARGUMENT,
                 "Invalid CTAP input");
-
             return;
         }
 
         g_variant_unref(input_variant);
 
-        /*
-         * CTAP2 user verification for the generic Process() entry point.
-         *
-         * 0x01 = authenticatorMakeCredential
-         * 0x02 = authenticatorGetAssertion
-         *
-         * GetInfo (0x04) and other non-user-verification commands
-         * are allowed without fingerprint authentication.
-         */
         if (input_len > 0 &&
             (input[0] == CTAP_CMD_MAKE_CREDENTIAL ||
              input[0] == CTAP_CMD_GET_ASSERTION)) {
@@ -202,137 +191,85 @@ static void method_call(
 
             if (require_fingerprint() != 0) {
                 free(input);
-
                 g_dbus_method_invocation_return_dbus_error(
                     invocation,
                     "org.linux.WebAuthn.Error.UserVerificationFailed",
                     "Fingerprint verification failed");
-
                 return;
             }
         }
 
         rc = authenticator_process(
-        input,
-        input_len,
-        &output,
-        &output_len);
+            input,
+            input_len,
+            &output,
+            &output_len);
 
-    /*
-     * UV authorizes only this single CTAP operation.
-     */
-    ctap_set_user_verified(0);
-
+        ctap_set_user_verified(0);
         free(input);
 
         if (rc != 0) {
-
             free(output);
-
             g_dbus_method_invocation_return_error(
                 invocation,
                 G_IO_ERROR,
                 G_IO_ERROR_FAILED,
                 "Authenticator processing failed");
-
             return;
         }
 
-        GVariant *response =
-            bytes_to_variant(
-                output,
-                output_len);
-
+        GVariant *response = bytes_to_variant(output, output_len);
         free(output);
 
         g_dbus_method_invocation_return_value(
             invocation,
-            g_variant_new(
-                "(@ay)",
-                response));
-
+            g_variant_new("(@ay)", response));
         return;
     }
 
-    /*
-     * ------------------------------------------------------------
-     * GetInfo
-     * ------------------------------------------------------------
-     */
-
     if (strcmp(method_name, "GetInfo") == 0) {
-
-        rc = ctap_get_info(
-            &output,
-            &output_len);
+        rc = ctap_get_info(&output, &output_len);
 
         if (rc != 0) {
-
             free(output);
-
             g_dbus_method_invocation_return_error(
                 invocation,
                 G_IO_ERROR,
                 G_IO_ERROR_FAILED,
                 "GetInfo failed");
-
             return;
         }
 
-        GVariant *response =
-            bytes_to_variant(
-                output,
-                output_len);
-
+        GVariant *response = bytes_to_variant(output, output_len);
         free(output);
 
         g_dbus_method_invocation_return_value(
             invocation,
-            g_variant_new(
-                "(@ay)",
-                response));
-
+            g_variant_new("(@ay)", response));
         return;
     }
 
-    /*
-     * ------------------------------------------------------------
-     * MakeCredential convenience method
-     * ------------------------------------------------------------
-     */
-
     if (strcmp(method_name, "MakeCredential") == 0) {
-
         GVariant *request_variant = NULL;
 
-        g_variant_get(
-            parameters,
-            "(@ay)",
-            &request_variant);
+        g_variant_get(parameters, "(@ay)", &request_variant);
 
-        if (variant_to_bytes(
-                request_variant,
-                &input,
-                &input_len) != 0) {
-
+        if (variant_to_bytes(request_variant, &input, &input_len) != 0) {
             g_variant_unref(request_variant);
-
             g_dbus_method_invocation_return_error(
                 invocation,
                 G_IO_ERROR,
                 G_IO_ERROR_INVALID_ARGUMENT,
                 "Invalid MakeCredential request");
-
             return;
         }
 
         g_variant_unref(request_variant);
 
-        fprintf(
-            stderr,
-            "WebAuthn: MakeCredential requires fingerprint verification\n");
+        fprintf(stderr, "WebAuthn: MakeCredential requires fingerprint verification\n");
 
         if (require_fingerprint() != 0) {
+            free(input);
             g_dbus_method_invocation_return_dbus_error(
                 invocation,
                 "org.linux.WebAuthn.Error.UserVerificationFailed",
@@ -340,83 +277,50 @@ static void method_call(
             return;
         }
 
-        rc = ctap_make_credential(
-            input,
-            input_len,
-            &output,
-            &output_len);
-
+        rc = ctap_make_credential(input, input_len, &output, &output_len);
         ctap_set_user_verified(0);
-
         free(input);
 
         if (rc != 0) {
-
             free(output);
-
             g_dbus_method_invocation_return_error(
                 invocation,
                 G_IO_ERROR,
                 G_IO_ERROR_FAILED,
                 "MakeCredential failed");
-
             return;
         }
 
-        GVariant *response =
-            bytes_to_variant(
-                output,
-                output_len);
-
+        GVariant *response = bytes_to_variant(output, output_len);
         free(output);
 
         g_dbus_method_invocation_return_value(
             invocation,
-            g_variant_new(
-                "(@ay)",
-                response));
-
+            g_variant_new("(@ay)", response));
         return;
     }
 
-    /*
-     * ------------------------------------------------------------
-     * GetAssertion convenience method
-     * ------------------------------------------------------------
-     */
-
     if (strcmp(method_name, "GetAssertion") == 0) {
-
         GVariant *request_variant = NULL;
 
-        g_variant_get(
-            parameters,
-            "(@ay)",
-            &request_variant);
+        g_variant_get(parameters, "(@ay)", &request_variant);
 
-        if (variant_to_bytes(
-                request_variant,
-                &input,
-                &input_len) != 0) {
-
+        if (variant_to_bytes(request_variant, &input, &input_len) != 0) {
             g_variant_unref(request_variant);
-
             g_dbus_method_invocation_return_error(
                 invocation,
                 G_IO_ERROR,
                 G_IO_ERROR_INVALID_ARGUMENT,
                 "Invalid GetAssertion request");
-
             return;
         }
 
         g_variant_unref(request_variant);
 
-        fprintf(
-            stderr,
-            "WebAuthn: GetAssertion requires fingerprint verification\n");
+        fprintf(stderr, "WebAuthn: GetAssertion requires fingerprint verification\n");
 
         if (require_fingerprint() != 0) {
+            free(input);
             g_dbus_method_invocation_return_dbus_error(
                 invocation,
                 "org.linux.WebAuthn.Error.UserVerificationFailed",
@@ -424,42 +328,26 @@ static void method_call(
             return;
         }
 
-        rc = ctap_get_assertion(
-            input,
-            input_len,
-            &output,
-            &output_len);
-
+        rc = ctap_get_assertion(input, input_len, &output, &output_len);
         ctap_set_user_verified(0);
-
         free(input);
 
         if (rc != 0) {
-
             free(output);
-
             g_dbus_method_invocation_return_error(
                 invocation,
                 G_IO_ERROR,
                 G_IO_ERROR_FAILED,
                 "GetAssertion failed");
-
             return;
         }
 
-        GVariant *response =
-            bytes_to_variant(
-                output,
-                output_len);
-
+        GVariant *response = bytes_to_variant(output, output_len);
         free(output);
 
         g_dbus_method_invocation_return_value(
             invocation,
-            g_variant_new(
-                "(@ay)",
-                response));
-
+            g_variant_new("(@ay)", response));
         return;
     }
 
@@ -487,48 +375,29 @@ static void on_bus_acquired(
     (void)name;
     (void)user_data;
 
-    registration_id =
-        g_dbus_connection_register_object(
-            connection,
-            OBJECT_PATH,
-            introspection_data->interfaces[0],
-            &interface_vtable,
-            NULL,
-            NULL,
-            &error);
+    registration_id = g_dbus_connection_register_object(
+        connection,
+        OBJECT_PATH,
+        introspection_data->interfaces[0],
+        &interface_vtable,
+        NULL,
+        NULL,
+        &error);
 
     if (registration_id == 0) {
-
         fprintf(
             stderr,
             "Failed to register D-Bus object: %s\n",
             error ? error->message : "unknown error");
-
         g_clear_error(&error);
-
         g_main_loop_quit(main_loop);
-
         return;
     }
 
-    fprintf(
-        stderr,
-        "LINUX WebAuthn: D-Bus object registered\n");
-
-    fprintf(
-        stderr,
-        "  Bus:       %s\n",
-        BUS_NAME);
-
-    fprintf(
-        stderr,
-        "  Object:    %s\n",
-        OBJECT_PATH);
-
-    fprintf(
-        stderr,
-        "  Interface: %s\n",
-        INTERFACE_NAME);
+    fprintf(stderr, "LINUX WebAuthn: D-Bus object registered\n");
+    fprintf(stderr, "  Bus:       %s\n", BUS_NAME);
+    fprintf(stderr, "  Object:    %s\n", OBJECT_PATH);
+    fprintf(stderr, "  Interface: %s\n", INTERFACE_NAME);
 }
 
 static void on_name_acquired(
@@ -538,11 +407,7 @@ static void on_name_acquired(
 {
     (void)connection;
     (void)user_data;
-
-    fprintf(
-        stderr,
-        "LINUX WebAuthn: acquired bus name %s\n",
-        name);
+    fprintf(stderr, "LINUX WebAuthn: acquired bus name %s\n", name);
 }
 
 static void on_name_lost(
@@ -553,10 +418,7 @@ static void on_name_lost(
     (void)connection;
     (void)user_data;
 
-    fprintf(
-        stderr,
-        "LINUX WebAuthn: lost bus name %s\n",
-        name);
+    fprintf(stderr, "LINUX WebAuthn: lost bus name %s\n", name);
 
     if (main_loop)
         g_main_loop_quit(main_loop);
@@ -567,73 +429,75 @@ int main(void)
     GError *error = NULL;
     guint owner_id;
 
-    fprintf(
-        stderr,
-        "LINUX WebAuthn authenticator service\n");
-
-    fprintf(
-        stderr,
-        "====================================\n");
+    fprintf(stderr, "LINUX WebAuthn authenticator service\n");
+    fprintf(stderr, "====================================\n");
 
     if (authenticator_init() != 0) {
-
-        fprintf(
-            stderr,
-            "Failed to initialize authenticator\n");
-
+        fprintf(stderr, "Failed to initialize authenticator\n");
         return EXIT_FAILURE;
     }
 
-    introspection_data =
-        g_dbus_node_info_new_for_xml(
-            introspection_xml,
-            &error);
+    introspection_data = g_dbus_node_info_new_for_xml(
+        introspection_xml,
+        &error);
 
     if (!introspection_data) {
-
         fprintf(
             stderr,
             "Failed to parse D-Bus introspection: %s\n",
             error ? error->message : "unknown error");
-
         g_clear_error(&error);
-
         authenticator_cleanup();
-
         return EXIT_FAILURE;
     }
 
-    main_loop =
-        g_main_loop_new(
-            NULL,
-            FALSE);
+    main_loop = g_main_loop_new(NULL, FALSE);
 
-    owner_id =
-        g_bus_own_name(
-            G_BUS_TYPE_SESSION,
-            BUS_NAME,
-            G_BUS_NAME_OWNER_FLAGS_NONE,
-            on_bus_acquired,
-            on_name_acquired,
-            on_name_lost,
-            NULL,
-            NULL);
+    owner_id = g_bus_own_name(
+        G_BUS_TYPE_SESSION,
+        BUS_NAME,
+        G_BUS_NAME_OWNER_FLAGS_NONE,
+        on_bus_acquired,
+        on_name_acquired,
+        on_name_lost,
+        NULL,
+        NULL);
 
-    fprintf(
-        stderr,
-        "LINUX WebAuthn: service running\n");
+    fprintf(stderr, "LINUX WebAuthn: service running\n");
+
+    /*
+     * FIDO HID is a separate blocking transport. Keep it off the
+     * GLib/D-Bus main loop so both interfaces remain responsive.
+     */
+    fido_hid_thread = g_thread_new(
+        "fido-hid",
+        fido_hid_thread_func,
+        NULL);
+
+    if (!fido_hid_thread) {
+        fprintf(stderr, "Failed to start FIDO HID transport\n");
+        g_bus_unown_name(owner_id);
+        g_main_loop_unref(main_loop);
+        main_loop = NULL;
+        g_dbus_node_info_unref(introspection_data);
+        introspection_data = NULL;
+        authenticator_cleanup();
+        return EXIT_FAILURE;
+    }
 
     g_main_loop_run(main_loop);
 
     g_bus_unown_name(owner_id);
 
-    if (registration_id != 0) {
-        /*
-         * The connection is released automatically with
-         * the bus ownership lifecycle.
-         */
-        registration_id = 0;
+    /* Stop and join the blocking FIDO HID worker before teardown. */
+    fido_hid_stop();
+
+    if (fido_hid_thread) {
+        g_thread_join(fido_hid_thread);
+        fido_hid_thread = NULL;
     }
+
+    registration_id = 0;
 
     g_main_loop_unref(main_loop);
     main_loop = NULL;
