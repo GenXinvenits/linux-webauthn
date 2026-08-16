@@ -349,8 +349,11 @@ int fido_hid_run(void)
         uint8_t *payload = NULL;
         size_t payload_len = 0;
 
-        if (uhid_read_output(report, sizeof(report), &report_len) != 0)
-            break;
+        if (uhid_read_output(report, sizeof(report), &report_len) != 0) {
+            fprintf(stderr, "FIDO HID: UHID receive failed; stopping transport\n");
+            uhid_close();
+            return -1;
+        }
 
         if (receive_message(report, report_len, &cid, &cmd,
                             &payload, &payload_len) != 0)
