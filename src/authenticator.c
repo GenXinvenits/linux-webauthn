@@ -9,6 +9,7 @@
 
 static int initialized = 0;
 static GThread *fido_hid_thread = NULL;
+static GMutex process_mutex = G_MUTEX_INIT;
 
 static gpointer fido_hid_thread_main(gpointer user_data)
 {
@@ -81,6 +82,14 @@ int authenticator_process(
         return -1;
 
     /*
+     * Only one CTAP operation may touch the authenticator state at a time.
+     * FIDO HID runs on its own thread while D-Bus requests are dispatched
+     * from the GLib main thread. Serializing here prevents concurrent
+     * operations from racing on the TPM context and per-operation UV state.
+     */
+    g_mutex_lock(&process_mutex);
+
+    /*
      * CTAP owns the user-verification policy. The transport layer
      * only carries the request and must not decide when fingerprint
      * verification is required.
@@ -94,19 +103,22 @@ int authenticator_process(
     }
 
     if (uv_status != CTAP2_OK) {
-        if (!output || !output_len)
+        if (!output || !output_len) {
+            g_mutex_unlock(&process_mutex);
             return -1;
+        }
 
         *output = malloc(1);
 
         if (!*output) {
             *output_len = 0;
+            g_mutex_unlock(&process_mutex);
             return -1;
         }
 
         (*output)[0] = (uint8_t)uv_status;
         *output_len = 1;
-
+        g_mutex_unlock(&process_mutex);
         return 0;
     }
 
@@ -121,6 +133,8 @@ int authenticator_process(
      * verification to authorize a later CTAP request.
      */
     ctap_set_user_verified(0);
+
+    g_mutex_unlock(&process_mutex);
 
     return rc;
 }
