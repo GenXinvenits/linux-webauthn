@@ -1,0 +1,15 @@
+linux-webauthn for Debian/Ubuntu
+================================
+
+The package installs the authenticator as a systemd user service. The daemon
+runs in the logged-in user's session and uses the existing Linux fingerprint
+and TPM stack; it does not require a root daemon.
+
+After installation, the user service is loaded from /usr/lib/systemd/user and
+is pulled into the user's default.target. The D-Bus service and UHID udev rule
+are installed as part of the same package.
+
+To inspect the service after installation:
+
+  systemctl --user status linux-webauthn.service
+  busctl --user status org.linux.WebAuthn
