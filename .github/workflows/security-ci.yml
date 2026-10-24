@@ -1,0 +1,45 @@
+name: Security build and tests
+
+on:
+  push:
+    branches: [staging]
+  pull_request:
+    branches: [staging]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: security-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            build-essential \
+            meson \
+            ninja-build \
+            pkg-config \
+            libglib2.0-dev \
+            libjson-glib-dev \
+            libssl-dev \
+            libtss2-dev
+
+      - name: Configure
+        run: meson setup builddir
+
+      - name: Compile
+        run: meson compile -C builddir
+
+      - name: Run tests
+        run: meson test -C builddir --print-errorlogs
