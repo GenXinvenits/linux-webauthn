@@ -35,8 +35,11 @@ jobs:
             libssl-dev \
             libtss2-dev
 
-      - name: Configure
+      - name: Configure with compiler hardening and sanitizers
         run: meson setup builddir
+        env:
+          CFLAGS: -O1 -g -D_FORTIFY_SOURCE=2 -fstack-protector-strong -fsanitize=address,undefined -fno-omit-frame-pointer
+          LDFLAGS: -fsanitize=address,undefined
 
       - name: Compile
         run: meson compile -C builddir
