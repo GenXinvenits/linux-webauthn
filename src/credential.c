@@ -5,7 +5,72 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <fcntl.h>
 #include <unistd.h>
+
+/* Write private state atomically, never following a symlink at the target. */
+static int write_file_atomic(const char *path, const void *data, size_t size)
+{
+    char temporary[4096];
+    int fd = -1, saved_errno = 0;
+    size_t offset = 0;
+    static unsigned long sequence;
+    if (!path || (!data && size != 0)) return -1;
+    for (unsigned int attempt = 0; attempt < 32; attempt++) {
+        int n = snprintf(temporary, sizeof(temporary), "%s.tmp.%ld.%lu",
+                         path, (long)getpid(), ++sequence);
+        if (n < 0 || (size_t)n >= sizeof(temporary)) return -1;
+        fd = open(temporary, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC |
+                  O_NOFOLLOW, 0600);
+        if (fd >= 0) break;
+        if (errno != EEXIST) { perror(temporary); return -1; }
+    }
+    if (fd < 0) return -1;
+    while (offset < size) {
+        ssize_t n = write(fd, (const char *)data + offset, size - offset);
+        if (n < 0 && errno == EINTR) continue;
+        if (n <= 0) { saved_errno = errno ? errno : EIO; goto fail; }
+        offset += (size_t)n;
+    }
+    if (fsync(fd) != 0) { saved_errno = errno; goto fail; }
+    if (close(fd) != 0) { fd = -1; saved_errno = errno; goto fail; }
+    fd = -1;
+    if (rename(temporary, path) != 0) { saved_errno = errno; goto fail; }
+    {
+        char parent[4096];
+        const char *slash = strrchr(path, '/');
+        if (slash) {
+            size_t n = (size_t)(slash - path);
+            if (n == 0) n = 1;
+            if (n < sizeof(parent)) {
+                memcpy(parent, path, n); parent[n] = '\0';
+                int dirfd = open(parent, O_RDONLY | O_DIRECTORY | O_CLOEXEC |
+                                 O_NOFOLLOW);
+                if (dirfd >= 0) { (void)fsync(dirfd); close(dirfd); }
+            }
+        }
+    }
+    return 0;
+fail:
+    if (fd >= 0) close(fd);
+    unlink(temporary);
+    errno = saved_errno;
+    perror("secure file write");
+    return -1;
+}
+
+static int open_private_regular_file(const char *path)
+{
+    struct stat st;
+    int fd = open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    if (fd < 0) return -1;
+    if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) ||
+        st.st_uid != geteuid() || (st.st_mode & 0077) != 0) {
+        fprintf(stderr, "Refusing unsafe credential file: %s\n", path);
+        close(fd); errno = EPERM; return -1;
+    }
+    return fd;
+}
 
 #define CREDENTIAL_METADATA_MAGIC   0x474E5743U
 #define CREDENTIAL_METADATA_VERSION 1U
@@ -30,32 +95,24 @@ typedef struct {
 static int ensure_directory(const char *path)
 {
     struct stat st;
-
-    if (!path)
-        return -1;
-
-    if (stat(path, &st) == 0) {
-        if (!S_ISDIR(st.st_mode)) {
-            fprintf(
-                stderr,
-                "Credential path exists but is not a directory: %s\n",
-                path);
+    if (!path || !*path) return -1;
+    if (lstat(path, &st) == 0) {
+        if (!S_ISDIR(st.st_mode) || st.st_uid != geteuid()) {
+            fprintf(stderr, "Refusing unsafe credential directory: %s\n", path);
             return -1;
         }
-
+        if ((st.st_mode & 0077) != 0 && chmod(path, 0700) != 0) {
+            perror("chmod credential directory"); return -1;
+        }
         return 0;
     }
-
-    if (errno != ENOENT) {
-        perror(path);
+    if (errno != ENOENT) { perror(path); return -1; }
+    if (mkdir(path, 0700) != 0) { perror(path); return -1; }
+    if (lstat(path, &st) != 0 || !S_ISDIR(st.st_mode) ||
+        st.st_uid != geteuid() || (st.st_mode & 0077) != 0) {
+        fprintf(stderr, "Created credential directory failed security checks: %s\n", path);
         return -1;
     }
-
-    if (mkdir(path, 0700) != 0) {
-        perror(path);
-        return -1;
-    }
-
     return 0;
 }
 
@@ -98,101 +155,52 @@ static int build_path(
 }
 
 static int write_metadata(
-    const char *path,
-    const CredentialMetadata *metadata)
+    const char *path, const CredentialMetadata *metadata)
 {
-    FILE *fp;
-
-    if (!path || !metadata)
-        return -1;
-
-    fp = fopen(path, "wb");
-    if (!fp) {
-        perror(path);
-        return -1;
-    }
-
-    if (fchmod(fileno(fp), 0600) != 0) {
-        perror("fchmod");
-        fclose(fp);
-        return -1;
-    }
-
-    if (fwrite(metadata, sizeof(*metadata), 1, fp) != 1) {
-        fprintf(
-            stderr,
-            "Failed writing credential metadata\n");
-        fclose(fp);
-        return -1;
-    }
-
-    if (fflush(fp) != 0) {
-        perror("fflush");
-        fclose(fp);
-        return -1;
-    }
-
-    if (fclose(fp) != 0) {
-        perror("fclose");
-        return -1;
-    }
-
-    return 0;
+    if (!path || !metadata) return -1;
+    return write_file_atomic(path, metadata, sizeof(*metadata));
 }
 
 static int read_metadata(
     const char *path,
     CredentialMetadata *metadata)
 {
-    FILE *fp;
+    struct stat st;
+    int fd;
+    size_t offset = 0;
 
-    if (!path || !metadata)
-        return -1;
-
-    fp = fopen(path, "rb");
-    if (!fp) {
-        perror(path);
-        return -1;
+    if (!path || !metadata) return -1;
+    fd = open_private_regular_file(path);
+    if (fd < 0) { perror(path); return -1; }
+    if (fstat(fd, &st) != 0 || st.st_size != (off_t)sizeof(*metadata)) {
+        fprintf(stderr, "Invalid credential metadata file size: %s\n", path);
+        close(fd); return -1;
     }
-
-    if (fread(metadata, sizeof(*metadata), 1, fp) != 1) {
-        fprintf(
-            stderr,
-            "Invalid credential metadata: %s\n",
-            path);
-        fclose(fp);
-        return -1;
+    while (offset < sizeof(*metadata)) {
+        ssize_t n = read(fd, (char *)metadata + offset, sizeof(*metadata) - offset);
+        if (n < 0 && errno == EINTR) continue;
+        if (n <= 0) {
+            fprintf(stderr, "Invalid credential metadata: %s\n", path);
+            close(fd); return -1;
+        }
+        offset += (size_t)n;
     }
-
-    if (fclose(fp) != 0) {
-        perror("fclose");
-        return -1;
-    }
+    close(fd);
 
     if (metadata->magic != CREDENTIAL_METADATA_MAGIC ||
         metadata->version != CREDENTIAL_METADATA_VERSION) {
-        fprintf(
-            stderr,
-            "Unsupported credential metadata format\n");
+        fprintf(stderr, "Unsupported credential metadata format\n");
         return -1;
     }
-
     if (metadata->credential_id_len != TPM_CREDENTIAL_ID_SIZE ||
-        metadata->user_handle_len > WEBAUTHN_USER_HANDLE_MAX) {
-        fprintf(
-            stderr,
-            "Invalid credential metadata lengths\n");
+        metadata->user_handle_len == 0 ||
+        metadata->user_handle_len > WEBAUTHN_USER_HANDLE_MAX ||
+        !memchr(metadata->rp_id, '\0', sizeof(metadata->rp_id)) ||
+        !memchr(metadata->user_name, '\0', sizeof(metadata->user_name)) ||
+        !memchr(metadata->display_name, '\0', sizeof(metadata->display_name))) {
+        fprintf(stderr, "Invalid credential metadata lengths or strings\n");
         return -1;
     }
-
-    /*
-     * Metadata is persisted to disk and therefore must not be
-     * trusted to contain NUL-terminated strings.
-     */
-    metadata->rp_id[WEBAUTHN_RP_ID_MAX - 1] = '\0';
-    metadata->user_name[WEBAUTHN_USER_NAME_MAX - 1] = '\0';
-    metadata->display_name[WEBAUTHN_DISPLAY_NAME_MAX - 1] = '\0';
-
     return 0;
 }
 
