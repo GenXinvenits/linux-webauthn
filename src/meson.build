@@ -15,7 +15,6 @@ linux_webauthn_sources = files(
 executable(
   'linux-webauthn',
   linux_webauthn_sources,
-
   dependencies: [
     glib_dep,
     gio_dep,
@@ -23,7 +22,6 @@ executable(
     openssl_dep,
     tss2_esys_dep
   ],
-
   install: true
 )
 
@@ -31,13 +29,11 @@ executable(
   'webauthn-dbus-assertion-test',
   '../webauthn-dbus-assertion-test.c',
   'cbor.c',
-
   dependencies: [
     glib_dep,
     gio_dep,
     openssl_dep
   ],
-
   install: false
 )
 
@@ -46,6 +42,7 @@ ctap_uv_test = executable(
   '../tests/test_ctap_uv.c',
   'ctap_uv.c',
   'cbor.c',
+  include_directories: include_directories('.'),
   install: false
 )
 
