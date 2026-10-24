@@ -637,6 +637,7 @@ static int build_assertion_response(
     WebAuthnCredential *credential,
     const char *rp_id,
     const uint8_t client_data_hash[SHA256_DIGEST_LENGTH],
+    int user_present,
     int include_user,
     int include_count,
     size_t count,
@@ -644,7 +645,7 @@ static int build_assertion_response(
     size_t *output_len)
 {
     uint8_t rp_id_hash[SHA256_DIGEST_LENGTH];
-    uint8_t flags = 0x01;
+    uint8_t flags = user_present ? 0x01 : 0;
     uint32_t sign_count;
     uint8_t *auth_data = NULL;
     size_t auth_data_len = 0;
@@ -699,9 +700,9 @@ static int build_assertion_response(
     if (!descriptor || !response)
         goto cleanup;
 
-    cbor_map_put(descriptor, cbor_new_text("type"), cbor_new_text("public-key"));
     cbor_map_put(descriptor, cbor_new_text("id"),
                  cbor_new_bytes(credential->id, credential->id_len));
+    cbor_map_put(descriptor, cbor_new_text("type"), cbor_new_text("public-key"));
     cbor_map_put(response, cbor_new_uint(0x01), descriptor);
     descriptor = NULL;
     cbor_map_put(response, cbor_new_uint(0x02),
@@ -767,9 +768,11 @@ int ctap_get_assertion(
     CborValue *rp_id_value;
     CborValue *client_data_hash;
     CborValue *allow_list;
+    CborValue *options;
     char data_directory[4096];
     size_t offset = 0;
     int has_allow_list;
+    int user_present = 1;
     WebAuthnCredential credential;
     int result;
 
@@ -800,6 +803,7 @@ int ctap_get_assertion(
     rp_id_value = cbor_map_get_uint(request_map, 0x01);
     client_data_hash = cbor_map_get_uint(request_map, 0x02);
     allow_list = cbor_map_get_uint(request_map, 0x03);
+    options = cbor_map_get_uint(request_map, 0x05);
 
     if (!rp_id_value || !client_data_hash ||
         !cbor_is_type(rp_id_value, CBOR_TYPE_TEXT) || !rp_id_value->text.data ||
@@ -812,6 +816,14 @@ int ctap_get_assertion(
     }
 
     has_allow_list = allow_list != NULL;
+    if (options && cbor_is_type(options, CBOR_TYPE_MAP)) {
+        CborValue *up = cbor_map_get_text(options, "up");
+
+        /* Chromium silently probes allow-list credentials with up=false,
+         * then repeats the request with user presence required. */
+        if (up && cbor_is_type(up, CBOR_TYPE_BOOL))
+            user_present = up->boolean;
+    }
     if (has_allow_list &&
         (!cbor_is_type(allow_list, CBOR_TYPE_ARRAY) || allow_list->array.count == 0)) {
         cbor_free(request_map);
@@ -906,6 +918,7 @@ int ctap_get_assertion(
         &credential,
         ctap_assertion_state.rp_id,
         ctap_assertion_state.client_data_hash,
+        user_present,
         !has_allow_list,
         1,
         ctap_assertion_state.count,
@@ -963,6 +976,7 @@ int ctap_get_next_assertion(uint8_t **output, size_t *output_len)
         &credential,
         ctap_assertion_state.rp_id,
         ctap_assertion_state.client_data_hash,
+        1,
         1,
         0,
         0,

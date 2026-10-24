@@ -324,7 +324,9 @@ int uhid_send_input(const uint8_t *data, size_t data_len)
         return -1;
     }
 
-    dump_bytes("UHID_INPUT2: TX", data, data_len);
+    /* Keepalive packets are frequent and contain no useful diagnostic data. */
+    if (data_len < 5 || data[4] != 0xbb)
+        dump_bytes("UHID_INPUT2: TX", data, data_len);
     return 0;
 }
 

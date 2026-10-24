@@ -5,7 +5,10 @@
 #include "uhid.h"
 
 #include <errno.h>
+#include <glib.h>
+#include <stdbool.h>
 #include <stdint.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -32,12 +35,20 @@
 #define CTAPHID_ERR_CHANNEL_BUSY 0x06
 #define CTAPHID_ERR_OTHER 0x7f
 
+#define CTAPHID_KEEPALIVE_STATUS_PROCESSING 0x01
+#define CTAPHID_KEEPALIVE_STATUS_UPNEEDED 0x02
+
 #define CTAPHID_CAPABILITY_WINK 0x01
 #define CTAPHID_CAPABILITY_CBOR 0x04
 #define CTAPHID_CAPABILITY_NMSG 0x08
 
 static volatile int running = 1;
 static uint32_t next_channel = 0x01020304U;
+
+typedef struct {
+    uint32_t cid;
+    atomic_bool running;
+} KeepaliveContext;
 
 static const uint8_t fido_report_descriptor[] = {
     0x06, 0xD0, 0xF1,
@@ -133,7 +144,8 @@ static int send_packet(uint32_t cid, uint8_t cmd,
             memcpy(report + 5, data + offset, chunk);
         }
 
-        dump_report("FIDO HID: TX", report, sizeof(report));
+        if (cmd != (CTAPHID_KEEPALIVE & 0x7f))
+            dump_report("FIDO HID: TX", report, sizeof(report));
 
         if (uhid_send_input(report, sizeof(report)) != 0) {
             fprintf(stderr, "FIDO HID: UHID input failed: %s\n", strerror(errno));
@@ -150,6 +162,29 @@ static int send_error(uint32_t cid, uint8_t error)
 {
     fprintf(stderr, "FIDO HID: ERROR cid=%08x code=%02x\n", cid, error);
     return send_packet(cid, CTAPHID_ERROR & 0x7f, &error, 1);
+}
+
+static gpointer keepalive_thread(gpointer user_data)
+{
+    KeepaliveContext *ctx = user_data;
+    const uint8_t status = CTAPHID_KEEPALIVE_STATUS_UPNEEDED;
+
+    while (atomic_load(&ctx->running)) {
+        g_usleep(100 * 1000);
+        if (!atomic_load(&ctx->running))
+            break;
+
+        /*
+         * Authenticator processing can wait on fprintd for a user scan.
+         * Keep the CTAPHID transaction alive and tell browsers that user
+         * interaction is still required while that synchronous call runs.
+         */
+        if (send_packet(ctx->cid, CTAPHID_KEEPALIVE & 0x7f,
+                        &status, sizeof(status)) != 0)
+            break;
+    }
+
+    return NULL;
 }
 
 static int handle_init(uint32_t cid, const uint8_t *data, size_t len)
@@ -181,6 +216,8 @@ static int handle_cbor(uint32_t cid, const uint8_t *data, size_t len)
     uint8_t *output = NULL;
     size_t output_len = 0;
     int rc;
+    KeepaliveContext keepalive = { .cid = cid };
+    GThread *keepalive_worker;
 
     fprintf(stderr, "FIDO HID: CBOR cid=%08x len=%zu\n", cid, len);
 
@@ -193,7 +230,13 @@ static int handle_cbor(uint32_t cid, const uint8_t *data, size_t len)
      * requests follow exactly the same path and authenticatorData flags
      * reflect the actual per-operation verification state.
      */
+    atomic_init(&keepalive.running, true);
+    keepalive_worker = g_thread_new("fido-keepalive", keepalive_thread,
+                                    &keepalive);
     rc = authenticator_process(data, len, &output, &output_len);
+    atomic_store(&keepalive.running, false);
+    if (keepalive_worker)
+        g_thread_join(keepalive_worker);
 
     if (rc != 0 || !output) {
         fprintf(stderr, "FIDO HID: CTAP processing failed rc=%d\n", rc);

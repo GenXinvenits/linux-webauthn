@@ -10,10 +10,93 @@
 
 #define MAX_ATTEMPTS 5
 
+#define VERIFY_RESULT_MATCH 0
+#define VERIFY_RESULT_FAILED (-1)
+#define VERIFY_RESULT_TERMINAL_ERROR (-2)
+#define VERIFY_RESULT_DEVICE_DISCONNECTED (-3)
+
+static int fingerprint_device_disconnected;
+
+static guint show_fingerprint_notification(void)
+{
+    GDBusConnection *bus;
+    GError *error = NULL;
+    GVariant *reply;
+    guint notification_id = 0;
+
+    bus = g_bus_get_sync(G_BUS_TYPE_SESSION, NULL, &error);
+    if (!bus) {
+        fprintf(stderr, "WebAuthn: desktop notification unavailable: %s\n",
+                error ? error->message : "unknown error");
+        g_clear_error(&error);
+        return 0;
+    }
+
+    reply = g_dbus_connection_call_sync(
+        bus,
+        "org.freedesktop.Notifications",
+        "/org/freedesktop/Notifications",
+        "org.freedesktop.Notifications",
+        "Notify",
+        g_variant_new("(susss@as@a{sv}i)",
+                      "LINUX WebAuthn", 0u, "",
+                      "Fingerprint verification",
+                      "Touch an enrolled finger on your fingerprint sensor to continue.",
+                      g_variant_new_strv(NULL, 0),
+                      g_variant_new_array(G_VARIANT_TYPE("{sv}"), NULL, 0),
+                      60000),
+        G_VARIANT_TYPE("(u)"),
+        G_DBUS_CALL_FLAGS_NONE,
+        2000,
+        NULL,
+        &error);
+
+    if (!reply) {
+        fprintf(stderr, "WebAuthn: unable to show fingerprint notification: %s\n",
+                error ? error->message : "unknown error");
+        g_clear_error(&error);
+    } else {
+        g_variant_get(reply, "(u)", &notification_id);
+        g_variant_unref(reply);
+    }
+
+    g_object_unref(bus);
+    return notification_id;
+}
+
+static void close_fingerprint_notification(guint notification_id)
+{
+    GDBusConnection *bus;
+
+    if (!notification_id)
+        return;
+
+    bus = g_bus_get_sync(G_BUS_TYPE_SESSION, NULL, NULL);
+    if (!bus)
+        return;
+
+    g_dbus_connection_call(
+        bus,
+        "org.freedesktop.Notifications",
+        "/org/freedesktop/Notifications",
+        "org.freedesktop.Notifications",
+        "CloseNotification",
+        g_variant_new("(u)", notification_id),
+        NULL,
+        G_DBUS_CALL_FLAGS_NONE,
+        2000,
+        NULL,
+        NULL,
+        NULL);
+    g_object_unref(bus);
+}
+
 typedef struct {
     GMainLoop *loop;
     gboolean matched;
     gboolean finished;
+    gboolean terminal_error;
+    gboolean device_disconnected;
     GDBusConnection *bus;
 } VerifyContext;
 
@@ -82,9 +165,18 @@ static void on_verify_status(
         return;
     }
 
-    if (g_strcmp0(result, "verify-disconnected") == 0 ||
-        g_strcmp0(result, "verify-unknown-error") == 0) {
+    if (g_strcmp0(result, "verify-disconnected") == 0) {
+        ctx->device_disconnected = TRUE;
+        ctx->finished = TRUE;
 
+        if (ctx->loop)
+            g_main_loop_quit(ctx->loop);
+
+        return;
+    }
+
+    if (g_strcmp0(result, "verify-unknown-error") == 0) {
+        ctx->terminal_error = TRUE;
         ctx->finished = TRUE;
 
         if (ctx->loop)
@@ -116,6 +208,8 @@ static int verify_once(void)
         .loop = g_main_loop_new(NULL, FALSE),
         .matched = FALSE,
         .finished = FALSE,
+        .terminal_error = FALSE,
+        .device_disconnected = FALSE,
         .bus = bus
     };
 
@@ -243,37 +337,36 @@ static int verify_once(void)
      */
     g_main_loop_run(ctx.loop);
 
-    /*
-     * Stop the verification operation.
-     */
-    g_dbus_connection_call_sync(
-        bus,
-        FPRINT_SERVICE,
-        FPRINT_DEVICE,
-        FPRINT_INTERFACE,
-        "VerifyStop",
-        NULL,
-        NULL,
-        G_DBUS_CALL_FLAGS_NONE,
-        -1,
-        NULL,
-        NULL);
+    /* A disconnected device must not receive any further D-Bus operations. */
+    if (!ctx.device_disconnected) {
+        /* Stop the verification operation. */
+        g_dbus_connection_call_sync(
+            bus,
+            FPRINT_SERVICE,
+            FPRINT_DEVICE,
+            FPRINT_INTERFACE,
+            "VerifyStop",
+            NULL,
+            NULL,
+            G_DBUS_CALL_FLAGS_NONE,
+            -1,
+            NULL,
+            NULL);
 
-    /*
-     * Release device.
-     */
-    g_dbus_connection_call_sync(
-        bus,
-        FPRINT_SERVICE,
-        FPRINT_DEVICE,
-        FPRINT_INTERFACE,
-        "Release",
-        NULL,
-        NULL,
-        G_DBUS_CALL_FLAGS_NONE,
-        -1,
-        NULL,
-        NULL);
+        /* Release device. */
+        g_dbus_connection_call_sync(
+            bus,
+            FPRINT_SERVICE,
+            FPRINT_DEVICE,
+            FPRINT_INTERFACE,
+            "Release",
+            NULL,
+            NULL,
+            G_DBUS_CALL_FLAGS_NONE,
+            -1,
+            NULL,
+            NULL);
+    }
 
     g_dbus_connection_signal_unsubscribe(
         bus,
@@ -282,11 +375,28 @@ static int verify_once(void)
     g_main_loop_unref(ctx.loop);
     g_object_unref(bus);
 
-    return ctx.matched ? 0 : -1;
+    if (ctx.matched)
+        return VERIFY_RESULT_MATCH;
+    if (ctx.device_disconnected)
+        return VERIFY_RESULT_DEVICE_DISCONNECTED;
+    if (ctx.terminal_error)
+        return VERIFY_RESULT_TERMINAL_ERROR;
+    return VERIFY_RESULT_FAILED;
 }
 
 int fingerprint_verify(void)
 {
+    guint notification_id;
+
+    if (fingerprint_device_disconnected) {
+        fprintf(
+            stderr,
+            "WebAuthn fingerprint: device is disconnected; restart the service after reconnecting it\n");
+        return -1;
+    }
+
+    notification_id = show_fingerprint_notification();
+
     fprintf(
         stderr,
         "WebAuthn: fingerprint verification required\n");
@@ -297,6 +407,7 @@ int fingerprint_verify(void)
         MAX_ATTEMPTS);
 
     for (int attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+        int result;
 
         fprintf(
             stderr,
@@ -304,13 +415,32 @@ int fingerprint_verify(void)
             attempt,
             MAX_ATTEMPTS);
 
-        if (verify_once() == 0) {
+        result = verify_once();
+        if (result == VERIFY_RESULT_MATCH) {
 
             fprintf(
                 stderr,
                 "WebAuthn: fingerprint verification SUCCESS\n");
 
+            close_fingerprint_notification(notification_id);
             return 0;
+        }
+
+        if (result == VERIFY_RESULT_TERMINAL_ERROR) {
+            fprintf(
+                stderr,
+                "WebAuthn fingerprint: terminal device error; stopping retries\n");
+            close_fingerprint_notification(notification_id);
+            return -1;
+        }
+
+        if (result == VERIFY_RESULT_DEVICE_DISCONNECTED) {
+            fingerprint_device_disconnected = 1;
+            fprintf(
+                stderr,
+                "WebAuthn fingerprint: device disconnected; stopping retries\n");
+            close_fingerprint_notification(notification_id);
+            return -1;
         }
 
         if (attempt < MAX_ATTEMPTS) {
@@ -326,5 +456,6 @@ int fingerprint_verify(void)
         "WebAuthn: fingerprint verification FAILED after %d attempts\n",
         MAX_ATTEMPTS);
 
+    close_fingerprint_notification(notification_id);
     return -1;
 }
