@@ -202,7 +202,19 @@ static gboolean on_verify_timeout(gpointer user_data)
     return G_SOURCE_REMOVE;
 }
 
-static int verify_once(guint timeout_seconds)
+static gint verification_timeout_ms(gint64 deadline)
+{
+    gint64 remaining_us = deadline - g_get_monotonic_time();
+    gint64 remaining_ms;
+
+    if (remaining_us <= 0)
+        return 1;
+
+    remaining_ms = (remaining_us + 999) / 1000;
+    return remaining_ms > 5000 ? 5000 : (gint)remaining_ms;
+}
+
+static int verify_once(gint64 deadline)
 {
     GError *error = NULL;
 
@@ -260,7 +272,7 @@ static int verify_once(guint timeout_seconds)
             g_variant_new("(s)", ""),
             NULL,
             G_DBUS_CALL_FLAGS_NONE,
-            5000,
+            verification_timeout_ms(deadline),
             NULL,
             &error);
 
@@ -354,7 +366,14 @@ static int verify_once(guint timeout_seconds)
      *
      * fprintd/libfprint tells us which enrolled fingerprint matched.
      */
-    ctx.timeout_source_id = g_timeout_add_seconds(timeout_seconds, on_verify_timeout, &ctx);
+    gint64 remaining_us = deadline - g_get_monotonic_time();
+    guint timeout_seconds = remaining_us > 0
+        ? (guint)((remaining_us + G_TIME_SPAN_SECOND - 1) / G_TIME_SPAN_SECOND)
+        : 0;
+
+    ctx.timeout_source_id = timeout_seconds > 0
+        ? g_timeout_add_seconds(timeout_seconds, on_verify_timeout, &ctx)
+        : 0;
     if (ctx.timeout_source_id != 0) {
         g_main_loop_run(ctx.loop);
     } else {
@@ -442,16 +461,11 @@ int fingerprint_verify(void)
 
     for (int attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
         int result;
-        gint64 remaining_us = deadline - g_get_monotonic_time();
-        guint timeout_seconds;
 
-        if (remaining_us <= 0) {
+        if (g_get_monotonic_time() >= deadline) {
             fprintf(stderr, "WebAuthn: overall fingerprint verification deadline reached\n");
             break;
         }
-
-        timeout_seconds = (guint)((remaining_us + G_TIME_SPAN_SECOND - 1) /
-                                  G_TIME_SPAN_SECOND);
 
         fprintf(
             stderr,
@@ -459,7 +473,7 @@ int fingerprint_verify(void)
             attempt,
             MAX_ATTEMPTS);
 
-        result = verify_once(timeout_seconds);
+        result = verify_once(deadline);
         if (result == VERIFY_RESULT_MATCH) {
 
             fprintf(
