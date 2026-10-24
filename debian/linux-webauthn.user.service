@@ -7,13 +7,30 @@ Wants=graphical-session-pre.target
 [Service]
 Type=dbus
 BusName=org.linux.WebAuthn
+
+# Wait until UHID exists and the current user has read/write access.
+ExecStartPre=/bin/sh -c 'while [ ! -r /dev/uhid ] || [ ! -w /dev/uhid ]; do sleep 0.1; done'
 ExecStart=/usr/bin/linux-webauthn
+
 Restart=on-failure
 RestartSec=2s
 
 # Keep the authenticator in the user's session. No root privileges are required.
 NoNewPrivileges=yes
 PrivateTmp=yes
+UMask=0077
+
+# Reduce the impact of a compromised authenticator process without hiding
+# the UHID or TPM device nodes it needs to operate.
+ProtectSystem=full
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictAddressFamilies=AF_UNIX
 
 [Install]
 WantedBy=default.target

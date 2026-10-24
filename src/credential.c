@@ -1,3 +1,4 @@
+#define _GNU_SOURCE
 #include "credential.h"
 
 #include <errno.h>

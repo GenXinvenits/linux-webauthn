@@ -9,6 +9,8 @@ project(
 )
 
 
+add_project_arguments('-D_GNU_SOURCE', language: 'c')
+
 glib_dep = dependency('glib-2.0')
 gio_dep = dependency('gio-2.0')
 json_dep = dependency('json-glib-1.0')
