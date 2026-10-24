@@ -321,7 +321,7 @@ static int verify_once(gint64 deadline)
             g_variant_new("(s)", "any"),
             NULL,
             G_DBUS_CALL_FLAGS_NONE,
-            5000,
+            verification_timeout_ms(deadline),
             NULL,
             &error);
 
@@ -349,7 +349,7 @@ static int verify_once(gint64 deadline)
             NULL,
             NULL,
             G_DBUS_CALL_FLAGS_NONE,
-            5000,
+            verification_timeout_ms(deadline),
             NULL,
             NULL);
 
@@ -399,7 +399,7 @@ static int verify_once(gint64 deadline)
             NULL,
             NULL,
             G_DBUS_CALL_FLAGS_NONE,
-            5000,
+            verification_timeout_ms(deadline),
             NULL,
             NULL);
 
@@ -413,7 +413,7 @@ static int verify_once(gint64 deadline)
             NULL,
             NULL,
             G_DBUS_CALL_FLAGS_NONE,
-            5000,
+            verification_timeout_ms(deadline),
             NULL,
             NULL);
     }
