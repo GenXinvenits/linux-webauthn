@@ -6,7 +6,7 @@ The project implements a virtual FIDO HID authenticator backed by the existing L
 
 ## Current status
 
-**Production integration is implemented.** The current `main` branch contains the working authenticator, automatic user-session startup, D-Bus integration, virtual FIDO HID transport, fingerprint-backed user verification, resident credentials, browser test coverage, and Debian packaging support.
+**Status: functional prototype; not yet production-hardened.** The repository contains the authenticator, automatic user-session startup, D-Bus integration, virtual FIDO HID transport, fingerprint-backed user verification, resident credentials, and Debian packaging. Automated unit/build checks do not yet establish full browser interoperability or security certification. See [SECURITY.md](SECURITY.md) for the release-blocking TPM isolation risk and required hardware/browser validation.
 
 The project is intended to run as the logged-in user's service. It does **not** need to run as root and does not replace the existing Linux fingerprint/PAM stack.
 
