@@ -9,6 +9,70 @@
 #include <sys/types.h>
 #include <unistd.h>
 
+/* Write private state atomically, never following a symlink at the target. */
+static int write_file_atomic(const char *path, const void *data, size_t size)
+{
+    char temporary[4096];
+    int fd = -1, saved_errno = 0;
+    size_t offset = 0;
+    static unsigned long sequence;
+    if (!path || (!data && size != 0)) return -1;
+    for (unsigned int attempt = 0; attempt < 32; attempt++) {
+        int n = snprintf(temporary, sizeof(temporary), "%s.tmp.%ld.%lu",
+                         path, (long)getpid(), ++sequence);
+        if (n < 0 || (size_t)n >= sizeof(temporary)) return -1;
+        fd = open(temporary, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC |
+                  O_NOFOLLOW, 0600);
+        if (fd >= 0) break;
+        if (errno != EEXIST) { perror(temporary); return -1; }
+    }
+    if (fd < 0) return -1;
+    while (offset < size) {
+        ssize_t n = write(fd, (const char *)data + offset, size - offset);
+        if (n < 0 && errno == EINTR) continue;
+        if (n <= 0) { saved_errno = errno ? errno : EIO; goto fail; }
+        offset += (size_t)n;
+    }
+    if (fsync(fd) != 0) { saved_errno = errno; goto fail; }
+    if (close(fd) != 0) { fd = -1; saved_errno = errno; goto fail; }
+    fd = -1;
+    if (rename(temporary, path) != 0) { saved_errno = errno; goto fail; }
+    {
+        char parent[4096];
+        const char *slash = strrchr(path, '/');
+        if (slash) {
+            size_t n = (size_t)(slash - path);
+            if (n == 0) n = 1;
+            if (n < sizeof(parent)) {
+                memcpy(parent, path, n); parent[n] = '\0';
+                int dirfd = open(parent, O_RDONLY | O_DIRECTORY | O_CLOEXEC |
+                                 O_NOFOLLOW);
+                if (dirfd >= 0) { (void)fsync(dirfd); close(dirfd); }
+            }
+        }
+    }
+    return 0;
+fail:
+    if (fd >= 0) close(fd);
+    unlink(temporary);
+    errno = saved_errno;
+    perror("secure file write");
+    return -1;
+}
+
+static int open_private_regular_file(const char *path)
+{
+    struct stat st;
+    int fd = open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    if (fd < 0) return -1;
+    if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) ||
+        st.st_uid != geteuid() || (st.st_mode & 0077) != 0) {
+        fprintf(stderr, "Refusing unsafe credential file: %s\n", path);
+        close(fd); errno = EPERM; return -1;
+    }
+    return fd;
+}
+
 #include <openssl/rand.h>
 
 #include <tss2/tss2_esys.h>
@@ -31,78 +95,48 @@ static void print_rc(const char *operation, TSS2_RC rc)
 static int ensure_directory(const char *path)
 {
     struct stat st;
-
-    if (stat(path, &st) == 0) {
-        if (!S_ISDIR(st.st_mode)) {
-            fprintf(stderr, "%s exists but is not a directory\n", path);
+    if (!path || !*path) return -1;
+    if (lstat(path, &st) == 0) {
+        if (!S_ISDIR(st.st_mode) || st.st_uid != geteuid()) {
+            fprintf(stderr, "Refusing unsafe credential directory: %s\n", path);
             return -1;
         }
-
+        if ((st.st_mode & 0077) != 0 && chmod(path, 0700) != 0) {
+            perror("chmod credential directory"); return -1;
+        }
         return 0;
     }
-
-    if (errno != ENOENT) {
-        perror(path);
+    if (errno != ENOENT) { perror(path); return -1; }
+    if (mkdir(path, 0700) != 0) { perror(path); return -1; }
+    if (lstat(path, &st) != 0 || !S_ISDIR(st.st_mode) ||
+        st.st_uid != geteuid() || (st.st_mode & 0077) != 0) {
+        fprintf(stderr, "Created credential directory failed security checks: %s\n", path);
         return -1;
     }
-
-    if (mkdir(path, 0700) != 0) {
-        perror(path);
-        return -1;
-    }
-
     return 0;
 }
 
 static int write_blob(
-    const char *path,
-    const void *data,
-    size_t size)
+    const char *path, const void *data, size_t size)
 {
-    FILE *fp;
-
-    if (size > UINT32_MAX) {
-        fprintf(stderr, "Blob too large\n");
-        return -1;
+    BlobHeader header;
+    unsigned char *buffer;
+    int result;
+    if (!path || (!data && size != 0) || size > UINT32_MAX ||
+        size > SIZE_MAX - sizeof(header)) {
+        fprintf(stderr, "Invalid TPM blob size\n"); return -1;
     }
-
-    fp = fopen(path, "wb");
-    if (!fp) {
-        perror(path);
-        return -1;
-    }
-
-    if (fchmod(fileno(fp), 0600) != 0) {
-        perror("fchmod");
-        fclose(fp);
-        return -1;
-    }
-
-    BlobHeader header = {
-        .magic = TPM_BLOB_MAGIC,
-        .version = TPM_BLOB_VERSION,
-        .size = (uint32_t)size
-    };
-
-    if (fwrite(&header, sizeof(header), 1, fp) != 1 ||
-        (size > 0 && fwrite(data, size, 1, fp) != 1)) {
-        fprintf(stderr, "Failed writing %s\n", path);
-        fclose(fp);
-        return -1;
-    }
-
-    if (fflush(fp) != 0) {
-        perror("fflush");
-        fclose(fp);
-        return -1;
-    }
-
-    if (fclose(fp) != 0) {
-        perror("fclose");
-        return -1;
-    }
-
-    return 0;
+    header.magic = TPM_BLOB_MAGIC;
+    header.version = TPM_BLOB_VERSION;
+    header.size = (uint32_t)size;
+    buffer = malloc(sizeof(header) + size);
+    if (!buffer) return -1;
+    memcpy(buffer, &header, sizeof(header));
+    if (size) memcpy(buffer + sizeof(header), data, size);
+    result = write_file_atomic(path, buffer, sizeof(header) + size);
+    memset(buffer, 0, sizeof(header) + size);
+    free(buffer);
+    return result;
 }
 
 static void *read_blob(
@@ -112,22 +146,22 @@ static void *read_blob(
     FILE *fp;
     BlobHeader header;
     void *data = NULL;
+    struct stat st;
+    int fd;
 
-    if (!size_out)
-        return NULL;
-
+    if (!size_out) return NULL;
     *size_out = 0;
-
-    fp = fopen(path, "rb");
-    if (!fp) {
-        perror(path);
-        return NULL;
+    fd = open_private_regular_file(path);
+    if (fd < 0) { perror(path); return NULL; }
+    if (fstat(fd, &st) != 0 || st.st_size < (off_t)sizeof(header)) {
+        fprintf(stderr, "Invalid TPM blob file size: %s\n", path);
+        close(fd); return NULL;
     }
-
+    fp = fdopen(fd, "rb");
+    if (!fp) { close(fd); return NULL; }
     if (fread(&header, sizeof(header), 1, fp) != 1) {
         fprintf(stderr, "Invalid TPM blob header: %s\n", path);
-        fclose(fp);
-        return NULL;
+        fclose(fp); return NULL;
     }
 
     if (header.magic != TPM_BLOB_MAGIC ||
@@ -137,7 +171,8 @@ static void *read_blob(
         return NULL;
     }
 
-    if (header.size == 0 || header.size > 1024 * 1024) {
+    if (header.size == 0 || header.size > 1024 * 1024 ||
+        st.st_size != (off_t)(sizeof(header) + header.size)) {
         fprintf(stderr, "Invalid TPM blob size: %s\n", path);
         fclose(fp);
         return NULL;
