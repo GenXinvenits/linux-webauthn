@@ -97,6 +97,7 @@ typedef struct {
     gboolean finished;
     gboolean terminal_error;
     gboolean device_disconnected;
+    guint timeout_source_id;
     GDBusConnection *bus;
 } VerifyContext;
 
@@ -184,6 +185,22 @@ static void on_verify_status(
     }
 }
 
+static gboolean on_verify_timeout(gpointer user_data)
+{
+    VerifyContext *ctx = user_data;
+
+    if (!ctx)
+        return G_SOURCE_REMOVE;
+
+    ctx->finished = TRUE;
+    ctx->timeout_source_id = 0;
+    fprintf(stderr, "WebAuthn fingerprint: verification timed out\n");
+    if (ctx->loop)
+        g_main_loop_quit(ctx->loop);
+
+    return G_SOURCE_REMOVE;
+}
+
 static int verify_once(void)
 {
     GError *error = NULL;
@@ -210,6 +227,7 @@ static int verify_once(void)
         .finished = FALSE,
         .terminal_error = FALSE,
         .device_disconnected = FALSE,
+        .timeout_source_id = 0,
         .bus = bus
     };
 
@@ -241,7 +259,7 @@ static int verify_once(void)
             g_variant_new("(s)", ""),
             NULL,
             G_DBUS_CALL_FLAGS_NONE,
-            -1,
+            5000,
             NULL,
             &error);
 
@@ -290,7 +308,7 @@ static int verify_once(void)
             g_variant_new("(s)", "any"),
             NULL,
             G_DBUS_CALL_FLAGS_NONE,
-            -1,
+            5000,
             NULL,
             &error);
 
@@ -318,7 +336,7 @@ static int verify_once(void)
             NULL,
             NULL,
             G_DBUS_CALL_FLAGS_NONE,
-            -1,
+            5000,
             NULL,
             NULL);
 
@@ -335,7 +353,19 @@ static int verify_once(void)
      *
      * fprintd/libfprint tells us which enrolled fingerprint matched.
      */
-    g_main_loop_run(ctx.loop);
+    ctx.timeout_source_id = g_timeout_add_seconds(30, on_verify_timeout, &ctx);
+    if (ctx.timeout_source_id != 0) {
+        g_main_loop_run(ctx.loop);
+    } else {
+        /* Fail closed if the timeout could not be installed. */
+        ctx.finished = TRUE;
+        fprintf(stderr, "WebAuthn fingerprint: unable to install verification timeout\n");
+    }
+
+    if (ctx.timeout_source_id != 0) {
+        g_source_remove(ctx.timeout_source_id);
+        ctx.timeout_source_id = 0;
+    }
 
     /* A disconnected device must not receive any further D-Bus operations. */
     if (!ctx.device_disconnected) {
@@ -349,7 +379,7 @@ static int verify_once(void)
             NULL,
             NULL,
             G_DBUS_CALL_FLAGS_NONE,
-            -1,
+            5000,
             NULL,
             NULL);
 
@@ -363,7 +393,7 @@ static int verify_once(void)
             NULL,
             NULL,
             G_DBUS_CALL_FLAGS_NONE,
-            -1,
+            5000,
             NULL,
             NULL);
     }
