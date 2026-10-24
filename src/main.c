@@ -11,6 +11,7 @@
 #define BUS_NAME       "org.linux.WebAuthn"
 #define OBJECT_PATH    "/org/linux/WebAuthn"
 #define INTERFACE_NAME "org.linux.WebAuthn.Authenticator"
+#define MAX_CTAP_MESSAGE_SIZE 1201U
 
 static GMainLoop *main_loop = NULL;
 static guint registration_id = 0;
@@ -38,6 +39,28 @@ static const gchar introspection_xml[] =
 
 static GDBusNodeInfo *introspection_data = NULL;
 
+/*
+ * Raw CTAP over the session bus is intended only for development and
+ * diagnostics. The normal browser path is the FIDO HID/UHID transport.
+ * Keep direct CTAP calls disabled by default to avoid exposing a second,
+ * caller-agnostic authentication interface to every process on the user's
+ * session bus. Set LINUX_WEBAUTHN_ENABLE_DBUS_CTAP=1 when launching the
+ * service only when deliberately testing this interface.
+ */
+static gboolean dbus_ctap_api_enabled(void)
+{
+    const gchar *value = g_getenv("LINUX_WEBAUTHN_ENABLE_DBUS_CTAP");
+    return value && strcmp(value, "1") == 0;
+}
+
+static gboolean is_sensitive_ctap_method(const gchar *method_name)
+{
+    return method_name &&
+           (strcmp(method_name, "Process") == 0 ||
+            strcmp(method_name, "GetAssertion") == 0 ||
+            strcmp(method_name, "MakeCredential") == 0);
+}
+
 static GVariant *bytes_to_variant(const uint8_t *data, size_t length)
 {
     GVariantBuilder builder;
@@ -62,6 +85,14 @@ static int variant_to_bytes(GVariant *variant, uint8_t **data, size_t *length)
     *length = 0;
 
     raw = g_variant_get_fixed_array(variant, &n, sizeof(guint8));
+
+    /*
+     * Bound allocations from untrusted D-Bus method arguments before copying
+     * the byte array. The CTAP parser performs command-specific validation
+     * after this transport-level size check.
+     */
+    if (n > MAX_CTAP_MESSAGE_SIZE)
+        return -1;
 
     if (!raw && n != 0)
         return -1;
@@ -95,6 +126,9 @@ static int process_dbus_ctap_command(
     int rc;
 
     if (!request || request_len > SIZE_MAX - 1 || !output || !output_len)
+        return -1;
+
+    if (request_len >= MAX_CTAP_MESSAGE_SIZE)
         return -1;
 
     input = malloc(request_len + 1);
@@ -138,6 +172,15 @@ static void method_call(
     (void)interface_name;
     (void)user_data;
 
+    if (is_sensitive_ctap_method(method_name) && !dbus_ctap_api_enabled()) {
+        g_dbus_method_invocation_return_error(
+            invocation, G_IO_ERROR, G_IO_ERROR_PERMISSION_DENIED,
+            "Direct CTAP over D-Bus is disabled; use FIDO HID transport. "
+            "For deliberate diagnostics, launch the service with "
+            "LINUX_WEBAUTHN_ENABLE_DBUS_CTAP=1.");
+        return;
+    }
+
     if (strcmp(method_name, "Process") == 0) {
         GVariant *input_variant = NULL;
 
@@ -147,7 +190,7 @@ static void method_call(
             g_variant_unref(input_variant);
             g_dbus_method_invocation_return_error(
                 invocation, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT,
-                "Invalid CTAP input");
+                "Invalid or oversized CTAP input");
             return;
         }
 
@@ -207,7 +250,7 @@ static void method_call(
             g_variant_unref(request_variant);
             g_dbus_method_invocation_return_error(
                 invocation, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT,
-                "Invalid WebAuthn request");
+                "Invalid or oversized WebAuthn request");
             return;
         }
 
@@ -348,6 +391,8 @@ int main(void)
         NULL);
 
     fprintf(stderr, "LINUX WebAuthn: service running\n");
+    if (!dbus_ctap_api_enabled())
+        fprintf(stderr, "LINUX WebAuthn: direct CTAP D-Bus methods are disabled\n");
 
     /*
      * authenticator_init() owns the FIDO HID worker. Do not start a second
