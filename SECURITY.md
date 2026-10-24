@@ -29,7 +29,9 @@ This policy and the regression tests are not a certification or a complete secur
 - Build and test results from the supported Ubuntu/Debian environments.
 - Hardware tests with the actual TPM 2.0 and fingerprint sensor, including failed scans, disconnects, and timeouts.
 - End-to-end browser tests proving that no assertion can be accepted without the required fingerprint verification.
-- A review of credential file handling, TPM parent/policy configuration, D-Bus lifecycle and service sandboxing.
+- Credential storage now rejects symlinked credential files, requires regular files owned by the service user with private permissions, validates persisted metadata lengths/strings and exact file sizes, and uses atomic file replacement. Directory ownership and permissions are checked and tightened.
+- **Unresolved TPM isolation risk:** credential keys are currently created with an empty TPM `userAuth` and without a PCR-bound authorization policy. TPM-backed private blobs are not sufficient to enforce fingerprint verification against a process that can access both the blobs and the TPM interface. Before production use, the project needs a threat-modelled TPM access boundary and a credential authorization design that survives restart without storing the authorization secret beside the blobs.
+- A review of TPM parent/policy configuration, D-Bus lifecycle and service sandboxing.
 - Review of CTAP/FIDO2 conformance, including all advertised protocol versions and options.
 
 Do not treat this project as certified or fully production-hardened until those checks have been completed.
