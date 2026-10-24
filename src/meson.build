@@ -47,3 +47,13 @@ ctap_uv_test = executable(
 )
 
 test('ctap-uv-security', ctap_uv_test)
+
+credential_storage_test = executable(
+  'test-credential-storage',
+  '../tests/test_credential_storage.c',
+  'credential.c',
+  include_directories: include_directories('.'),
+  install: false
+)
+
+test('credential-storage-security', credential_storage_test)
