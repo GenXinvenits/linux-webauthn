@@ -9,6 +9,7 @@
 #define FPRINT_INTERFACE "net.reactivated.Fprint.Device"
 
 #define MAX_ATTEMPTS 5
+#define MAX_VERIFICATION_DURATION_SECONDS 60
 
 #define VERIFY_RESULT_MATCH 0
 #define VERIFY_RESULT_FAILED (-1)
@@ -201,7 +202,7 @@ static gboolean on_verify_timeout(gpointer user_data)
     return G_SOURCE_REMOVE;
 }
 
-static int verify_once(void)
+static int verify_once(guint timeout_seconds)
 {
     GError *error = NULL;
 
@@ -353,7 +354,7 @@ static int verify_once(void)
      *
      * fprintd/libfprint tells us which enrolled fingerprint matched.
      */
-    ctx.timeout_source_id = g_timeout_add_seconds(30, on_verify_timeout, &ctx);
+    ctx.timeout_source_id = g_timeout_add_seconds(timeout_seconds, on_verify_timeout, &ctx);
     if (ctx.timeout_source_id != 0) {
         g_main_loop_run(ctx.loop);
     } else {
@@ -436,8 +437,21 @@ int fingerprint_verify(void)
         "WebAuthn: up to %d attempts; any enrolled finger may be used\n",
         MAX_ATTEMPTS);
 
+    gint64 deadline = g_get_monotonic_time() +
+        ((gint64)MAX_VERIFICATION_DURATION_SECONDS * G_TIME_SPAN_SECOND);
+
     for (int attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
         int result;
+        gint64 remaining_us = deadline - g_get_monotonic_time();
+        guint timeout_seconds;
+
+        if (remaining_us <= 0) {
+            fprintf(stderr, "WebAuthn: overall fingerprint verification deadline reached\n");
+            break;
+        }
+
+        timeout_seconds = (guint)((remaining_us + G_TIME_SPAN_SECOND - 1) /
+                                  G_TIME_SPAN_SECOND);
 
         fprintf(
             stderr,
@@ -445,7 +459,7 @@ int fingerprint_verify(void)
             attempt,
             MAX_ATTEMPTS);
 
-        result = verify_once();
+        result = verify_once(timeout_seconds);
         if (result == VERIFY_RESULT_MATCH) {
 
             fprintf(
@@ -483,8 +497,8 @@ int fingerprint_verify(void)
 
     fprintf(
         stderr,
-        "WebAuthn: fingerprint verification FAILED after %d attempts\n",
-        MAX_ATTEMPTS);
+        "WebAuthn: fingerprint verification failed or timed out (up to %d attempts, %d-second limit)\n",
+        MAX_ATTEMPTS, MAX_VERIFICATION_DURATION_SECONDS);
 
     close_fingerprint_notification(notification_id);
     return -1;
