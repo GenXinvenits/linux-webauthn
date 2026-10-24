@@ -2,7 +2,9 @@ name: Debian package
 
 on:
   push:
-    branches: [main]
+    branches: [main, staging]
+  pull_request:
+    branches: [main, staging]
   workflow_dispatch:
 
 permissions:
@@ -10,7 +12,8 @@ permissions:
 
 jobs:
   build-deb:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
 
     steps:
       - name: Checkout
@@ -19,7 +22,7 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
+          sudo apt-get install --no-install-recommends -y \
             build-essential \
             debhelper \
             devscripts \
@@ -36,7 +39,7 @@ jobs:
       - name: Build Debian package
         run: dpkg-buildpackage -us -uc -b
 
-      - name: Inspect package contents
+      - name: Inspect package contents and service hardening
         shell: bash
         run: |
           set -euo pipefail
@@ -59,8 +62,33 @@ jobs:
             }
           done
 
-          # The Debian helper must generate user-service lifecycle handling.
+          # Inspect the actual unit shipped in the .deb, not just the source template.
           workdir="$(mktemp -d)"
+          dpkg-deb -x "$deb" "$workdir/root"
+          unit="$workdir/root/usr/lib/systemd/user/linux-webauthn.service"
+          test -f "$unit"
+          for directive in \
+            'ExecStartPre=' \
+            'NoNewPrivileges=yes' \
+            'PrivateTmp=yes' \
+            'UMask=0077' \
+            'ProtectSystem=full' \
+            'ProtectKernelTunables=yes' \
+            'ProtectKernelModules=yes' \
+            'ProtectControlGroups=yes' \
+            'LockPersonality=yes' \
+            'MemoryDenyWriteExecute=yes' \
+            'RestrictSUIDSGID=yes' \
+            'RestrictRealtime=yes' \
+            'RestrictAddressFamilies=AF_UNIX'; do
+            grep -Fq "$directive" "$unit" || {
+              echo "ERROR: packaged systemd unit missing: $directive" >&2
+              exit 1
+            }
+          done
+          test "$(grep -Fc 'ExecStart=' "$unit")" -eq 1
+
+          # The Debian helper must generate user-service lifecycle handling.
           dpkg-deb -e "$deb" "$workdir/control"
           test -f "$workdir/control/postinst"
           grep -Fq 'deb-systemd-helper' "$workdir/control/postinst"
