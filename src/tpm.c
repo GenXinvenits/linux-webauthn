@@ -497,17 +497,19 @@ int tpm_save_credential(
     if (ensure_directory(directory) != 0)
         return -1;
 
-    snprintf(
-        public_path,
-        sizeof(public_path),
-        "%s/public",
-        directory);
-
-    snprintf(
-        private_path,
-        sizeof(private_path),
-        "%s/private",
-        directory);
+    if (snprintf(
+            public_path,
+            sizeof(public_path),
+            "%s/public",
+            directory) >= (int)sizeof(public_path) ||
+        snprintf(
+            private_path,
+            sizeof(private_path),
+            "%s/private",
+            directory) >= (int)sizeof(private_path)) {
+        fprintf(stderr, "TPM credential path too long\\n");
+        return -1;
+    }
 
     if (write_blob(
             public_path,
@@ -544,17 +546,19 @@ int tpm_load_credential(
 
     memset(credential, 0, sizeof(*credential));
 
-    snprintf(
-        public_path,
-        sizeof(public_path),
-        "%s/public",
-        directory);
-
-    snprintf(
-        private_path,
-        sizeof(private_path),
-        "%s/private",
-        directory);
+    if (snprintf(
+            public_path,
+            sizeof(public_path),
+            "%s/public",
+            directory) >= (int)sizeof(public_path) ||
+        snprintf(
+            private_path,
+            sizeof(private_path),
+            "%s/private",
+            directory) >= (int)sizeof(private_path)) {
+        fprintf(stderr, "TPM credential path too long\\n");
+        return -1;
+    }
 
     public_data = read_blob(public_path, &public_size);
     if (!public_data)
