@@ -1,3 +1,9 @@
+linux-webauthn (0.1-5) unstable; urgency=medium
+
+  * Include the latest security enhancements for machine testing.
+
+ -- GenXinvenits <14211793+GenXinvenits@users.noreply.github.com>  Sat, 24 Oct 2026 17:05:00 +0530
+
 linux-webauthn (0.1-4) unstable; urgency=medium
 
   * Align the source package changelog with the existing 0.1-4 Debian package release.
