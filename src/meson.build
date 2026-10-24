@@ -40,3 +40,13 @@ executable(
 
   install: false
 )
+
+ctap_uv_test = executable(
+  'test-ctap-uv',
+  '../tests/test_ctap_uv.c',
+  'ctap_uv.c',
+  'cbor.c',
+  install: false
+)
+
+test('ctap-uv-security', ctap_uv_test)
