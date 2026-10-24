@@ -66,7 +66,7 @@ Current methods include:
 - `MakeCredential`
 - `GetAssertion`
 
-The D-Bus methods use the same authenticator/CTAP processing path as the FIDO HID transport so the two interfaces share the same credential, UV, and authenticator state.
+Direct CTAP methods over D-Bus (`Process`, `MakeCredential`, and `GetAssertion`) are disabled by default because every process on the user's session bus could otherwise call a second authentication interface. `GetInfo` remains available. For deliberate development diagnostics only, set `LINUX_WEBAUTHN_ENABLE_DBUS_CTAP=1` in the service process environment; do not enable this in a normal production session. The browser-facing path is FIDO HID/UHID.
 
 ## Automatic user-session startup
 
