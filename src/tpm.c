@@ -486,6 +486,8 @@ int tpm_save_credential(
 {
     char public_path[4096];
     char private_path[4096];
+    int public_len;
+    int private_len;
 
     if (!credential ||
         !credential->public_blob ||
@@ -497,17 +499,13 @@ int tpm_save_credential(
     if (ensure_directory(directory) != 0)
         return -1;
 
-    if (snprintf(
-            public_path,
-            sizeof(public_path),
-            "%s/public",
-            directory) >= (int)sizeof(public_path) ||
-        snprintf(
-            private_path,
-            sizeof(private_path),
-            "%s/private",
-            directory) >= (int)sizeof(private_path)) {
-        fprintf(stderr, "TPM credential path too long\\n");
+    public_len = snprintf(
+        public_path, sizeof(public_path), "%s/public", directory);
+    private_len = snprintf(
+        private_path, sizeof(private_path), "%s/private", directory);
+    if (public_len < 0 || (size_t)public_len >= sizeof(public_path) ||
+        private_len < 0 || (size_t)private_len >= sizeof(private_path)) {
+        fprintf(stderr, "TPM credential path too long\n");
         return -1;
     }
 
